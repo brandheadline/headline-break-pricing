@@ -3,15 +3,15 @@ import pandas as pd
 import numpy as np
 
 st.set_page_config(
-    page_title="Headline Break Pricing Engine v2.3",
+    page_title="Headline Break Pricing Engine v2.4",
     layout="centered"
 )
 
 st.title("Headline Break Pricing Engine")
-st.caption("Fit-to-sell pricing. Checklist-aware. No guessing.")
+st.caption("Demand-aware pricing. Checklist + Rookie Override.")
 
 # =========================================================
-# OFFICIAL MLB TEAM LIST
+# OFFICIAL MLB TEAMS
 # =========================================================
 
 MLB_TEAMS = [
@@ -38,8 +38,8 @@ uploaded_file = st.file_uploader(
 
 team_strength_df = None
 ev_concentration = None
-auto_checklist_strength = None
-auto_format_recommendation = None
+base_checklist_strength = None
+base_format_recommendation = None
 
 if uploaded_file is not None:
     try:
@@ -50,7 +50,6 @@ if uploaded_file is not None:
         else:
             teams_df = pd.read_excel(xls, sheet_name="Teams", header=None)
 
-            # Flatten entire sheet to values
             values = (
                 teams_df
                 .astype(str)
@@ -59,7 +58,6 @@ if uploaded_file is not None:
                 .flatten()
             )
 
-            # Count official MLB team appearances
             team_counts = {}
             for value in values:
                 for team in MLB_TEAMS:
@@ -74,10 +72,9 @@ if uploaded_file is not None:
                     columns=["Team","Appearances"]
                 )
 
-                total_appearances = team_df["Appearances"].sum()
-                team_df["Weight"] = team_df["Appearances"] / total_appearances
+                total = team_df["Appearances"].sum()
+                team_df["Weight"] = team_df["Appearances"] / total
 
-                # EV concentration (top 5 teams)
                 ev_concentration = (
                     team_df
                     .sort_values("Weight", ascending=False)
@@ -85,7 +82,6 @@ if uploaded_file is not None:
                     .sum()
                 )
 
-                # Buyer-perceived ROI classification
                 def classify_team(weight):
                     if weight >= 0.06:
                         return "Strong"
@@ -94,27 +90,66 @@ if uploaded_file is not None:
                     else:
                         return "Weak"
 
-                team_df["Team Strength"] = team_df["Weight"].apply(classify_team)
+                team_df["Base Strength"] = team_df["Weight"].apply(classify_team)
                 team_strength_df = team_df.sort_values("Weight", ascending=False)
 
-                # Checklist + format inference
                 if ev_concentration >= 0.40:
-                    auto_checklist_strength = "Elite"
-                    auto_format_recommendation = "PYT"
+                    base_checklist_strength = "Elite"
+                    base_format_recommendation = "PYT"
                 elif ev_concentration >= 0.30:
-                    auto_checklist_strength = "Strong"
-                    auto_format_recommendation = "PYT"
+                    base_checklist_strength = "Strong"
+                    base_format_recommendation = "PYT"
                 elif ev_concentration >= 0.22:
-                    auto_checklist_strength = "Average"
-                    auto_format_recommendation = "Random"
+                    base_checklist_strength = "Average"
+                    base_format_recommendation = "Random"
                 else:
-                    auto_checklist_strength = "Weak"
-                    auto_format_recommendation = "Divisional"
+                    base_checklist_strength = "Weak"
+                    base_format_recommendation = "Divisional"
 
                 st.success("Checklist parsed successfully.")
 
     except Exception as e:
         st.error(f"Checklist upload error: {e}")
+
+# =========================================================
+# ROOKIE OVERRIDE (PER PRODUCT)
+# =========================================================
+
+st.header("Rookie Impact Override (Per Product)")
+
+rookie_override = st.selectbox(
+    "Breakout rookie impact for THIS product",
+    [
+        "None",
+        "One Notable Rookie",
+        "One Strong Rookie",
+        "One Elite Rookie",
+        "Multiple Elite Rookies"
+    ],
+    index=0
+)
+
+def apply_rookie_override(base_strength, override):
+    tiers = ["Weak","Average","Strong","Elite"]
+    idx = tiers.index(base_strength)
+
+    if override == "One Notable Rookie":
+        idx += 1
+    elif override == "One Strong Rookie":
+        idx += 2
+    elif override in ["One Elite Rookie","Multiple Elite Rookies"]:
+        idx = 3
+
+    return tiers[min(idx, 3)]
+
+# Apply override globally to checklist strength
+final_checklist_strength = base_checklist_strength or "Average"
+
+if rookie_override != "None":
+    final_checklist_strength = apply_rookie_override(
+        final_checklist_strength,
+        rookie_override
+    )
 
 # =========================================================
 # PRICING INPUTS
@@ -150,20 +185,11 @@ target_margin = st.slider(
     value=30
 ) / 100
 
-st.divider()
-
-checklist_strength = st.selectbox(
-    "Checklist strength",
-    ["Elite","Strong","Average","Weak"],
-    index=["Elite","Strong","Average","Weak"].index(auto_checklist_strength)
-    if auto_checklist_strength else 1
-)
-
 break_format = st.selectbox(
     "Break format",
     ["PYT","Random","Divisional"],
-    index=["PYT","Random","Divisional"].index(auto_format_recommendation)
-    if auto_format_recommendation else 0
+    index=["PYT","Random","Divisional"].index(base_format_recommendation)
+    if base_format_recommendation else 0
 )
 
 # =========================================================
@@ -171,8 +197,8 @@ break_format = st.selectbox(
 # =========================================================
 
 checklist_multiplier_map = {
-    "Elite": 1.15,
-    "Strong": 1.05,
+    "Elite": 1.18,
+    "Strong": 1.08,
     "Average": 1.00,
     "Weak": 0.90
 }
@@ -183,7 +209,7 @@ format_multiplier_map = {
     "Divisional": 0.97
 }
 
-checklist_multiplier = checklist_multiplier_map[checklist_strength]
+checklist_multiplier = checklist_multiplier_map[final_checklist_strength]
 format_multiplier = format_multiplier_map[break_format]
 
 # =========================================================
@@ -211,7 +237,7 @@ sealed_ceiling = sealed_anchor * 1.15
 st.header("Pricing Output")
 
 pricing_df = pd.DataFrame({
-    "Tier": ["Floor (Do Not Run Below)","Safe","Target","Stretch"],
+    "Tier": ["Floor","Safe","Target","Stretch"],
     "Total Break Revenue ($)": [
         round(floor,2),
         round(safe_adj,2),
@@ -228,32 +254,30 @@ st.table(pricing_df)
 
 st.header("Sanity Checks")
 
-if target_adj > sealed_ceiling:
-    st.warning("Target pricing exceeds sealed market tolerance.")
-else:
-    st.success("Target pricing is within sealed market tolerance.")
+if rookie_override in ["One Elite Rookie","Multiple Elite Rookies"]:
+    st.success("Elite rookie override applied – team gravity overridden.")
 
-if checklist_strength == "Weak" and break_format == "PYT":
-    st.warning("Weak checklist with PYT is high risk.")
+if target_adj > sealed_ceiling:
+    st.warning("Target pricing exceeds sealed tolerance. Justified only with strong demand.")
 
 if safe_adj < case_cost:
     st.error("Safe pricing does not cover cost.")
 
-if ev_concentration is not None:
+if ev_concentration:
     st.info(f"EV Concentration (Top 5 Teams): {round(ev_concentration * 100,1)}%")
 
 # =========================================================
-# TEAM STRENGTH OUTPUT
+# TEAM OUTPUT
 # =========================================================
 
 if team_strength_df is not None:
-    st.header("Team Strength (Customer ROI Signal)")
+    st.header("Team Strength (Before Rookie Override)")
     st.dataframe(
-        team_strength_df[["Team","Team Strength","Appearances","Weight"]],
+        team_strength_df[["Team","Base Strength","Appearances","Weight"]],
         use_container_width=True
     )
 
 st.caption(
-    "This engine models buyer-perceived value and pricing psychology, "
-    "not exact card EV. Designed to prevent bad break structures."
+    "Rookie overrides temporarily supersede structural team value. "
+    "This reflects real buyer behavior and hype cycles."
 )
