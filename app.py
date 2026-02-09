@@ -2,14 +2,17 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-st.set_page_config(page_title="Headline Break Pricing Engine v2", layout="centered")
+st.set_page_config(
+    page_title="Headline Break Pricing Engine v2",
+    layout="centered"
+)
 
 st.title("Headline Break Pricing Engine")
 st.caption("Fit-to-sell pricing. Checklist-aware. No guessing.")
 
-# -----------------------------
+# =========================================================
 # CHECKLIST UPLOAD
-# -----------------------------
+# =========================================================
 
 st.header("Checklist Upload (Optional but Recommended)")
 
@@ -23,30 +26,42 @@ ev_concentration = None
 auto_checklist_strength = None
 auto_format_recommendation = None
 
-if uploaded_file:
+if uploaded_file is not None:
     try:
         xls = pd.ExcelFile(uploaded_file)
 
-        if "Teams" in xls.sheet_names:
+        if "Teams" not in xls.sheet_names:
+            st.error("Checklist must contain a sheet named 'Teams'.")
+        else:
             teams_df = pd.read_excel(xls, sheet_name="Teams")
 
-            # Normalize columns
-            teams_df.columns = [c.lower() for c in teams_df.columns]
+            # --- HARDEN COLUMN HANDLING ---
+            teams_df.columns = [str(c).strip().lower() for c in teams_df.columns]
 
-            # Expecting a 'team' column
             if "team" not in teams_df.columns:
-                st.error("Teams sheet must contain a 'Team' column.")
+                st.error("The 'Teams' sheet must contain a column named 'Team'.")
             else:
-                team_counts = teams_df["team"].value_counts().reset_index()
+                # Remove blank or malformed rows
+                teams_df = teams_df.dropna(subset=["team"])
+
+                # Normalize team names
+                teams_df["team"] = teams_df["team"].astype(str).str.strip()
+
+                # Count appearances
+                team_counts = (
+                    teams_df["team"]
+                    .value_counts()
+                    .reset_index()
+                )
                 team_counts.columns = ["Team", "Appearances"]
 
                 total_appearances = team_counts["Appearances"].sum()
                 team_counts["Weight"] = team_counts["Appearances"] / total_appearances
 
-                # EV concentration (top 5 teams)
+                # EV concentration = top 5 teams
                 ev_concentration = team_counts.head(5)["Weight"].sum()
 
-                # Assign team strength (ROI-style signal)
+                # Team strength classification (buyer-perceived ROI)
                 def classify_team(weight):
                     if weight >= 0.06:
                         return "Strong"
@@ -57,9 +72,11 @@ if uploaded_file:
 
                 team_counts["Team Strength"] = team_counts["Weight"].apply(classify_team)
 
-                team_strength_df = team_counts
+                team_strength_df = team_counts.sort_values(
+                    "Weight", ascending=False
+                )
 
-                # Checklist strength inference
+                # Checklist + format inference
                 if ev_concentration >= 0.40:
                     auto_checklist_strength = "Elite"
                     auto_format_recommendation = "PYT"
@@ -74,15 +91,13 @@ if uploaded_file:
                     auto_format_recommendation = "Divisional"
 
                 st.success("Checklist parsed successfully.")
-        else:
-            st.warning("No 'Teams' sheet found. Upload still accepted, but checklist logic skipped.")
 
     except Exception as e:
         st.error(f"Checklist upload error: {e}")
 
-# -----------------------------
-# INPUTS
-# -----------------------------
+# =========================================================
+# PRICING INPUTS
+# =========================================================
 
 st.header("Pricing Inputs")
 
@@ -116,7 +131,7 @@ target_margin = st.slider(
 
 st.divider()
 
-# Checklist strength (auto or manual)
+# Auto-set but override-able
 checklist_strength = st.selectbox(
     "Checklist strength",
     ["Elite", "Strong", "Average", "Weak"],
@@ -131,9 +146,9 @@ break_format = st.selectbox(
     if auto_format_recommendation else 0
 )
 
-# -----------------------------
+# =========================================================
 # MULTIPLIERS
-# -----------------------------
+# =========================================================
 
 checklist_multiplier_map = {
     "Elite": 1.15,
@@ -151,9 +166,9 @@ format_multiplier_map = {
 checklist_multiplier = checklist_multiplier_map[checklist_strength]
 format_multiplier = format_multiplier_map[break_format]
 
-# -----------------------------
-# CORE MATH
-# -----------------------------
+# =========================================================
+# CORE PRICING MATH
+# =========================================================
 
 def revenue_for_margin(cost, margin, fees):
     return cost / (1 - margin - fees)
@@ -169,14 +184,19 @@ stretch_adj = stretch * checklist_multiplier * format_multiplier
 
 sealed_ceiling = sealed_anchor * 1.15
 
-# -----------------------------
+# =========================================================
 # OUTPUT
-# -----------------------------
+# =========================================================
 
 st.header("Pricing Output")
 
 pricing_df = pd.DataFrame({
-    "Tier": ["Floor (Do Not Run Below)", "Safe", "Target", "Stretch"],
+    "Tier": [
+        "Floor (Do Not Run Below)",
+        "Safe",
+        "Target",
+        "Stretch"
+    ],
     "Total Break Revenue ($)": [
         round(floor, 2),
         round(safe_adj, 2),
@@ -187,37 +207,49 @@ pricing_df = pd.DataFrame({
 
 st.table(pricing_df)
 
-# -----------------------------
+# =========================================================
 # SANITY CHECKS
-# -----------------------------
+# =========================================================
 
 st.header("Sanity Checks")
 
 if target_adj > sealed_ceiling:
-    st.warning("Target pricing exceeds sealed tolerance. Only justified with strong demand.")
+    st.warning(
+        "Target pricing exceeds sealed market tolerance. "
+        "Only justified with strong demand."
+    )
+else:
+    st.success("Target pricing is within sealed market tolerance.")
 
 if checklist_strength == "Weak" and break_format == "PYT":
-    st.warning("Weak checklist + PYT is high risk. Random or Divisional recommended.")
+    st.warning(
+        "Weak checklist with PYT is high risk. "
+        "Random or Divisional recommended."
+    )
 
 if safe_adj < case_cost:
     st.error("Safe pricing does not cover cost. Do not run this break.")
 
-if ev_concentration:
-    st.info(f"EV Concentration (Top 5 Teams): {round(ev_concentration * 100, 1)}%")
+if ev_concentration is not None:
+    st.info(
+        f"EV Concentration (Top 5 Teams): {round(ev_concentration * 100, 1)}%"
+    )
 
-# -----------------------------
+# =========================================================
 # TEAM STRENGTH OUTPUT
-# -----------------------------
+# =========================================================
 
 if team_strength_df is not None:
     st.header("Team Strength (Customer ROI Signal)")
     st.dataframe(
-        team_strength_df[["Team", "Team Strength", "Appearances", "Weight"]]
-        .sort_values("Weight", ascending=False),
+        team_strength_df[
+            ["Team", "Team Strength", "Appearances", "Weight"]
+        ],
         use_container_width=True
     )
 
 st.caption(
-    "This engine classifies teams and formats for pricing intelligence, not exact EV. "
-    "It is designed to prevent irrational pricing and bad break structures."
+    "This engine models buyer-perceived value and pricing psychology, "
+    "not exact card EV. It is designed to prevent irrational pricing "
+    "and bad break structures."
 )
