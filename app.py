@@ -2,260 +2,219 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-# -------------------------------------------------
-# PAGE SETUP
-# -------------------------------------------------
-
+# =================================================
+# PAGE CONFIG
+# =================================================
 st.set_page_config(
-    page_title="Headline Break Pricing Engine v2.5",
+    page_title="Headline Break Pricing Engine v3.1",
     layout="centered"
 )
 
 st.title("Headline Break Pricing Engine")
-st.caption("Checklist-aware. Rookie-driven. No guessing.")
+st.caption("Checklist-aware. Sport-aware. Rookie-driven. No guessing.")
 
-# -------------------------------------------------
-# OFFICIAL MLB TEAMS
-# -------------------------------------------------
-
-MLB_TEAMS = [
-    "Arizona Diamondbacks","Atlanta Braves","Baltimore Orioles","Boston Red Sox",
-    "Chicago Cubs","Chicago White Sox","Cincinnati Reds","Cleveland Guardians",
-    "Colorado Rockies","Detroit Tigers","Houston Astros","Kansas City Royals",
-    "Los Angeles Angels","Los Angeles Dodgers","Miami Marlins","Milwaukee Brewers",
-    "Minnesota Twins","New York Mets","New York Yankees","Oakland Athletics",
-    "Philadelphia Phillies","Pittsburgh Pirates","San Diego Padres","San Francisco Giants",
-    "Seattle Mariners","St. Louis Cardinals","Tampa Bay Rays","Texas Rangers",
-    "Toronto Blue Jays","Washington Nationals"
-]
-
-# -------------------------------------------------
-# CARD TYPE WEIGHTS (DEMAND LOGIC)
-# -------------------------------------------------
-
-CARD_WEIGHTS = {
-    "rookie patch auto": 10,
-    "rookie autograph": 6,
-    "rookie auto": 6,
-    "autograph": 5,
-    "patch": 4,
-    "relic": 4,
-    "insert": 3,
-    "variation": 3,
-    "rookie": 1,
-    "base": 0.5
+# =================================================
+# SPORT PROFILES
+# =================================================
+SPORT_PROFILES = {
+    "Baseball (MLB)": {
+        "rookie_keywords": ["rc", "rookie"],
+        "auto_keywords": ["auto", "autograph"],
+        "patch_keywords": ["patch", "relic", "memorabilia"],
+        "insert_keywords": ["insert"],
+        "variation_keywords": ["variation", "parallel"],
+        "weights": {
+            "base": 1.0,
+            "rookie": 3.0,
+            "auto": 6.0,
+            "patch": 7.0,
+            "insert": 2.0,
+            "variation": 2.5
+        }
+    },
+    "Football (NFL)": {
+        "rookie_keywords": ["rc", "rookie"],
+        "auto_keywords": ["auto", "autograph"],
+        "patch_keywords": ["patch", "shield", "logo"],
+        "insert_keywords": ["insert"],
+        "variation_keywords": ["parallel"],
+        "weights": {
+            "base": 1.0,
+            "rookie": 4.0,
+            "auto": 7.0,
+            "patch": 8.0,
+            "insert": 2.5,
+            "variation": 3.0
+        }
+    },
+    "Basketball (NBA)": {
+        "rookie_keywords": ["rc", "rookie"],
+        "auto_keywords": ["auto"],
+        "patch_keywords": ["patch", "tag", "logoman"],
+        "insert_keywords": ["insert"],
+        "variation_keywords": ["parallel"],
+        "weights": {
+            "base": 1.0,
+            "rookie": 4.5,
+            "auto": 7.5,
+            "patch": 9.0,
+            "insert": 3.0,
+            "variation": 3.5
+        }
+    },
+    "Soccer": {
+        "rookie_keywords": ["rc", "rookie"],
+        "auto_keywords": ["auto"],
+        "patch_keywords": ["patch"],
+        "insert_keywords": ["insert"],
+        "variation_keywords": ["parallel"],
+        "weights": {
+            "base": 1.0,
+            "rookie": 3.5,
+            "auto": 6.5,
+            "patch": 7.5,
+            "insert": 2.5,
+            "variation": 3.0
+        }
+    },
+    "Non-Sport (Star Wars / Disney)": {
+        "rookie_keywords": [],
+        "auto_keywords": ["auto"],
+        "patch_keywords": [],
+        "insert_keywords": ["insert"],
+        "variation_keywords": ["parallel"],
+        "weights": {
+            "base": 1.0,
+            "auto": 8.0,
+            "insert": 3.0,
+            "variation": 3.5
+        }
+    }
 }
 
-# -------------------------------------------------
+# =================================================
+# SPORT SELECTION
+# =================================================
+st.header("Product Context")
+sport = st.selectbox("Select sport / category", list(SPORT_PROFILES.keys()))
+profile = SPORT_PROFILES[sport]
+
+# =================================================
 # CHECKLIST INGESTION
-# -------------------------------------------------
-
+# =================================================
 st.header("Checklist Upload (Strongly Recommended)")
+uploaded = st.file_uploader("Upload Beckett Checklist (Excel)", type=["xlsx"])
 
-uploaded_file = st.file_uploader(
-    "Upload Beckett Checklist (Excel)",
-    type=["xlsx"]
-)
+if not uploaded:
+    st.info("Upload a checklist to continue.")
+    st.stop()
 
-team_structural_df = None
-rookie_df = None
-final_team_df = None
+xls = pd.ExcelFile(uploaded)
+sheets = {s.lower(): s for s in xls.sheet_names}
 
-if uploaded_file:
-    try:
-        xls = pd.ExcelFile(uploaded_file)
-        all_text = []
+if "teams" not in sheets:
+    st.error("Checklist must contain a Teams sheet.")
+    st.stop()
 
-        for sheet in xls.sheet_names:
-            df = pd.read_excel(xls, sheet_name=sheet, header=None)
-            all_text.extend(df.astype(str).values.flatten())
+teams_df = xls.parse(sheets["teams"])
+team_col = [c for c in teams_df.columns if "team" in c.lower()]
+if not team_col:
+    st.error("Teams sheet must contain a Team column.")
+    st.stop()
 
-        # -------------------------------------------------
-        # STRUCTURAL TEAM SHARE
-        # -------------------------------------------------
+team_col = team_col[0]
 
-        team_counts = {team: 0 for team in MLB_TEAMS}
+# =================================================
+# CARD CLASSIFICATION
+# =================================================
+def score_row(row):
+    text = " ".join([str(v).lower() for v in row.values if pd.notna(v)])
+    score = profile["weights"]["base"]
 
-        for value in all_text:
-            for team in MLB_TEAMS:
-                if value.strip() == team:
-                    team_counts[team] += 1
+    for k in profile["rookie_keywords"]:
+        if k in text:
+            score += profile["weights"].get("rookie", 0)
 
-        team_df = pd.DataFrame(
-            [(k, v) for k, v in team_counts.items() if v > 0],
-            columns=["Team", "Appearances"]
-        )
+    for k in profile["auto_keywords"]:
+        if k in text:
+            score += profile["weights"].get("auto", 0)
 
-        total_appearances = team_df["Appearances"].sum()
-        team_df["Checklist Share (%)"] = (
-            team_df["Appearances"] / total_appearances * 100
-        ).round(2)
+    for k in profile["patch_keywords"]:
+        if k in text:
+            score += profile["weights"].get("patch", 0)
 
-        def structural_tier(pct):
-            if pct >= 6:
-                return "Strong"
-            elif pct >= 3.5:
-                return "Average"
-            else:
-                return "Weak"
+    for k in profile["insert_keywords"]:
+        if k in text:
+            score += profile["weights"].get("insert", 0)
 
-        team_df["Structural Tier"] = team_df["Checklist Share (%)"].apply(structural_tier)
+    for k in profile["variation_keywords"]:
+        if k in text:
+            score += profile["weights"].get("variation", 0)
 
-        # -------------------------------------------------
-        # ROOKIE DETECTION + PREMIUM SCORING
-        # -------------------------------------------------
+    return score
 
-        rookie_scores = {}
+cards = []
+for sheet in xls.sheet_names:
+    df = xls.parse(sheet)
+    if team_col in df.columns:
+        df = df[[team_col]].copy()
+        df["score"] = df.apply(score_row, axis=1)
+        cards.append(df)
 
-        for value in all_text:
-            text = value.lower()
+cards_df = pd.concat(cards)
+team_strength = cards_df.groupby(team_col)["score"].sum().reset_index()
+team_strength.columns = ["Team", "RawScore"]
+team_strength["DemandPct"] = team_strength["RawScore"] / team_strength["RawScore"].sum() * 100
+team_strength = team_strength.sort_values("DemandPct", ascending=False)
 
-            if "rc" in text or "rookie" in text:
-                weight = 0
+st.success("Checklist parsed and team demand calculated.")
 
-                for key, score in CARD_WEIGHTS.items():
-                    if key in text:
-                        weight = max(weight, score)
-
-                for team in MLB_TEAMS:
-                    if team.lower() in text:
-                        rookie_scores.setdefault(team, 0)
-                        rookie_scores[team] += weight
-
-        rookie_df = pd.DataFrame(
-            [(k, v) for k, v in rookie_scores.items()],
-            columns=["Team", "Rookie Impact Score"]
-        ).sort_values("Rookie Impact Score", ascending=False)
-
-        # -------------------------------------------------
-        # ROOKIE TIERS
-        # -------------------------------------------------
-
-        def rookie_tier(score):
-            if score >= 40:
-                return "Elite"
-            elif score >= 20:
-                return "Strong"
-            elif score >= 8:
-                return "Moderate"
-            else:
-                return "None"
-
-        rookie_df["Rookie Tier"] = rookie_df["Rookie Impact Score"].apply(rookie_tier)
-
-        # -------------------------------------------------
-        # FINAL TEAM DEMAND TIER (AUTO PROMOTION)
-        # -------------------------------------------------
-
-        final_df = team_df.merge(rookie_df, on="Team", how="left")
-        final_df["Rookie Impact Score"] = final_df["Rookie Impact Score"].fillna(0)
-        final_df["Rookie Tier"] = final_df["Rookie Tier"].fillna("None")
-
-        def final_tier(row):
-            if row["Rookie Tier"] == "Elite":
-                return "Elite"
-            if row["Rookie Tier"] == "Strong":
-                return "Strong"
-            return row["Structural Tier"]
-
-        final_df["Final Demand Tier"] = final_df.apply(final_tier, axis=1)
-
-        final_team_df = final_df.sort_values(
-            ["Final Demand Tier","Checklist Share (%)"],
-            ascending=[True, False]
-        )
-
-        st.success("Checklist parsed successfully.")
-
-    except Exception as e:
-        st.error(f"Checklist processing error: {e}")
-
-# -------------------------------------------------
+# =================================================
 # PRICING INPUTS
-# -------------------------------------------------
-
+# =================================================
 st.header("Pricing Inputs")
 
-case_cost = st.number_input("Case cost (Topps direct)", value=800.0, step=50.0)
-sealed_anchor = st.number_input("Public sealed price (D&A / Blowout)", value=1700.0, step=50.0)
+case_cost = st.number_input("Case cost (direct)", value=800.0, step=25.0)
+market_price = st.number_input("Public sealed price (D&A / Blowout)", value=1700.0, step=25.0)
+fees = st.slider("Platform + processing fees (%)", 0, 20, 10)
+margin = st.slider("Target margin (%)", 0, 60, 30)
 
-platform_fees = st.slider("Platform + processing fees (%)", 0, 20, 10) / 100
-target_margin = st.slider("Target margin (%)", 0, 50, 30) / 100
+net_floor = case_cost * (1 + fees / 100)
+target_total = net_floor * (1 + margin / 100)
 
-break_format = st.selectbox("Break format", ["PYT","Random","Divisional"])
+# =================================================
+# PRICING CURVES
+# =================================================
+def apply_curve(weights, total, mode):
+    if mode == "Aggressive":
+        adj = weights ** 1.35
+    elif mode == "Smoothed":
+        adj = weights ** 0.85
+    else:
+        adj = weights
 
-# -------------------------------------------------
-# MULTIPLIERS
-# -------------------------------------------------
+    pct = adj / adj.sum()
+    prices = pct * total
+    return (pct * 100).round(2), prices.round(2)
 
-tier_multiplier = {
-    "Elite": 1.18,
-    "Strong": 1.08,
-    "Average": 1.00,
-    "Weak": 0.92
-}
+# =================================================
+# OUTPUT
+# =================================================
+st.header("Per-Team Pricing")
 
-format_multiplier = {
-    "PYT": 1.05,
-    "Random": 1.00,
-    "Divisional": 0.97
-}
+for mode in ["Aggressive", "Balanced", "Smoothed"]:
+    pct, prices = apply_curve(team_strength["DemandPct"], target_total, mode)
+    df = team_strength.copy()
+    df["Weight %"] = pct.values
+    df["Price ($)"] = prices.values
 
-# -------------------------------------------------
-# PRICING CALC
-# -------------------------------------------------
-
-def revenue(cost, margin, fees):
-    return cost / (1 - margin - fees)
-
-floor = revenue(case_cost, 0, platform_fees)
-safe = revenue(case_cost, 0.20, platform_fees)
-target = revenue(case_cost, target_margin, platform_fees)
-stretch = revenue(case_cost, 0.40, platform_fees)
-
-tier = "Average"
-if final_team_df is not None:
-    if "Elite" in final_team_df["Final Demand Tier"].values:
-        tier = "Elite"
-    elif "Strong" in final_team_df["Final Demand Tier"].values:
-        tier = "Strong"
-
-mult = tier_multiplier[tier] * format_multiplier[break_format]
-
-pricing = pd.DataFrame({
-    "Tier": ["Floor","Safe","Target","Stretch"],
-    "Total Break Revenue ($)": [
-        round(floor,2),
-        round(safe * mult,2),
-        round(target * mult,2),
-        round(stretch * mult,2)
-    ]
-})
-
-st.header("Pricing Output")
-st.table(pricing)
-
-# -------------------------------------------------
-# TOP ROOKIES
-# -------------------------------------------------
-
-if rookie_df is not None and not rookie_df.empty:
-    st.header("Top Rookies in This Product")
-    st.table(rookie_df.head(3))
-
-# -------------------------------------------------
-# TEAM DEMAND TABLE
-# -------------------------------------------------
-
-if final_team_df is not None:
-    st.header("Team Demand Breakdown")
+    st.subheader(f"{mode} Strategy")
     st.dataframe(
-        final_team_df[
-            ["Team","Checklist Share (%)","Structural Tier","Rookie Tier","Final Demand Tier"]
-        ],
+        df[["Team", "Weight %", "Price ($)"]].sort_values("Price ($)", ascending=False),
         use_container_width=True
     )
 
 st.caption(
-    "Rookie demand automatically overrides structural team gravity when premium exposure exists."
+    "Aggressive = top-heavy PYT | Balanced = fair market | Smoothed = fill-friendly. "
+    "All pricing sums exactly to target revenue."
 )
