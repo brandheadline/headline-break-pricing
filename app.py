@@ -1,29 +1,103 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 
-st.set_page_config(page_title="Headline Break Pricing Engine", layout="centered")
+st.set_page_config(page_title="Headline Break Pricing Engine v2", layout="centered")
 
 st.title("Headline Break Pricing Engine")
-st.caption("Fit-to-sell pricing. No guessing. No copying competitors.")
+st.caption("Fit-to-sell pricing. Checklist-aware. No guessing.")
+
+# -----------------------------
+# CHECKLIST UPLOAD
+# -----------------------------
+
+st.header("Checklist Upload (Optional but Recommended)")
+
+uploaded_file = st.file_uploader(
+    "Upload Beckett Checklist (Excel)",
+    type=["xlsx"]
+)
+
+team_strength_df = None
+ev_concentration = None
+auto_checklist_strength = None
+auto_format_recommendation = None
+
+if uploaded_file:
+    try:
+        xls = pd.ExcelFile(uploaded_file)
+
+        if "Teams" in xls.sheet_names:
+            teams_df = pd.read_excel(xls, sheet_name="Teams")
+
+            # Normalize columns
+            teams_df.columns = [c.lower() for c in teams_df.columns]
+
+            # Expecting a 'team' column
+            if "team" not in teams_df.columns:
+                st.error("Teams sheet must contain a 'Team' column.")
+            else:
+                team_counts = teams_df["team"].value_counts().reset_index()
+                team_counts.columns = ["Team", "Appearances"]
+
+                total_appearances = team_counts["Appearances"].sum()
+                team_counts["Weight"] = team_counts["Appearances"] / total_appearances
+
+                # EV concentration (top 5 teams)
+                ev_concentration = team_counts.head(5)["Weight"].sum()
+
+                # Assign team strength (ROI-style signal)
+                def classify_team(weight):
+                    if weight >= 0.06:
+                        return "Strong"
+                    elif weight >= 0.035:
+                        return "Average"
+                    else:
+                        return "Weak"
+
+                team_counts["Team Strength"] = team_counts["Weight"].apply(classify_team)
+
+                team_strength_df = team_counts
+
+                # Checklist strength inference
+                if ev_concentration >= 0.40:
+                    auto_checklist_strength = "Elite"
+                    auto_format_recommendation = "PYT"
+                elif ev_concentration >= 0.30:
+                    auto_checklist_strength = "Strong"
+                    auto_format_recommendation = "PYT"
+                elif ev_concentration >= 0.22:
+                    auto_checklist_strength = "Average"
+                    auto_format_recommendation = "Random"
+                else:
+                    auto_checklist_strength = "Weak"
+                    auto_format_recommendation = "Divisional"
+
+                st.success("Checklist parsed successfully.")
+        else:
+            st.warning("No 'Teams' sheet found. Upload still accepted, but checklist logic skipped.")
+
+    except Exception as e:
+        st.error(f"Checklist upload error: {e}")
 
 # -----------------------------
 # INPUTS
 # -----------------------------
 
-st.header("Inputs")
+st.header("Pricing Inputs")
 
 case_cost = st.number_input(
     "Your case cost (Topps direct)",
     min_value=0.0,
-    value=2500.0,
-    step=100.0
+    value=800.0,
+    step=50.0
 )
 
 sealed_anchor = st.number_input(
     "Public sealed price (Dave & Adam’s / Blowout)",
     min_value=0.0,
-    value=3200.0,
-    step=100.0
+    value=1700.0,
+    step=50.0
 )
 
 platform_fees = st.slider(
@@ -40,14 +114,21 @@ target_margin = st.slider(
     value=30
 ) / 100
 
-checklist_tier = st.selectbox(
+st.divider()
+
+# Checklist strength (auto or manual)
+checklist_strength = st.selectbox(
     "Checklist strength",
-    ["Elite", "Strong", "Average", "Weak"]
+    ["Elite", "Strong", "Average", "Weak"],
+    index=["Elite", "Strong", "Average", "Weak"].index(auto_checklist_strength)
+    if auto_checklist_strength else 1
 )
 
-format_type = st.selectbox(
+break_format = st.selectbox(
     "Break format",
-    ["PYT", "Random", "Divisional"]
+    ["PYT", "Random", "Divisional"],
+    index=["PYT", "Random", "Divisional"].index(auto_format_recommendation)
+    if auto_format_recommendation else 0
 )
 
 # -----------------------------
@@ -67,8 +148,8 @@ format_multiplier_map = {
     "Divisional": 0.97
 }
 
-checklist_multiplier = checklist_multiplier_map[checklist_tier]
-format_multiplier = format_multiplier_map[format_type]
+checklist_multiplier = checklist_multiplier_map[checklist_strength]
+format_multiplier = format_multiplier_map[break_format]
 
 # -----------------------------
 # CORE MATH
@@ -77,14 +158,14 @@ format_multiplier = format_multiplier_map[format_type]
 def revenue_for_margin(cost, margin, fees):
     return cost / (1 - margin - fees)
 
-floor_revenue = revenue_for_margin(case_cost, 0.0, platform_fees)
-safe_revenue = revenue_for_margin(case_cost, 0.20, platform_fees)
-target_revenue = revenue_for_margin(case_cost, target_margin, platform_fees)
-stretch_revenue = revenue_for_margin(case_cost, 0.40, platform_fees)
+floor = revenue_for_margin(case_cost, 0.0, platform_fees)
+safe = revenue_for_margin(case_cost, 0.20, platform_fees)
+target = revenue_for_margin(case_cost, target_margin, platform_fees)
+stretch = revenue_for_margin(case_cost, 0.40, platform_fees)
 
-adjusted_safe = safe_revenue * checklist_multiplier * format_multiplier
-adjusted_target = target_revenue * checklist_multiplier * format_multiplier
-adjusted_stretch = stretch_revenue * checklist_multiplier * format_multiplier
+safe_adj = safe * checklist_multiplier * format_multiplier
+target_adj = target * checklist_multiplier * format_multiplier
+stretch_adj = stretch * checklist_multiplier * format_multiplier
 
 sealed_ceiling = sealed_anchor * 1.15
 
@@ -94,41 +175,49 @@ sealed_ceiling = sealed_anchor * 1.15
 
 st.header("Pricing Output")
 
-pricing_table = pd.DataFrame({
+pricing_df = pd.DataFrame({
     "Tier": ["Floor (Do Not Run Below)", "Safe", "Target", "Stretch"],
     "Total Break Revenue ($)": [
-        round(floor_revenue, 2),
-        round(adjusted_safe, 2),
-        round(adjusted_target, 2),
-        round(adjusted_stretch, 2)
+        round(floor, 2),
+        round(safe_adj, 2),
+        round(target_adj, 2),
+        round(stretch_adj, 2)
     ]
 })
 
-st.table(pricing_table)
+st.table(pricing_df)
 
 # -----------------------------
-# WARNINGS
+# SANITY CHECKS
 # -----------------------------
 
 st.header("Sanity Checks")
 
-if adjusted_target > sealed_ceiling:
-    st.warning(
-        "Target pricing exceeds typical sealed tolerance. "
-        "Only justified if demand is extremely strong."
-    )
-else:
-    st.success("Target pricing is within sealed market tolerance.")
+if target_adj > sealed_ceiling:
+    st.warning("Target pricing exceeds sealed tolerance. Only justified with strong demand.")
 
-if checklist_tier == "Weak" and format_type == "PYT":
-    st.warning(
-        "Weak checklist with PYT is risky. Random or Divisional may sell better."
-    )
+if checklist_strength == "Weak" and break_format == "PYT":
+    st.warning("Weak checklist + PYT is high risk. Random or Divisional recommended.")
 
-if adjusted_safe < case_cost:
-    st.error("Safe price does not cover cost. Do not run this break.")
+if safe_adj < case_cost:
+    st.error("Safe pricing does not cover cost. Do not run this break.")
+
+if ev_concentration:
+    st.info(f"EV Concentration (Top 5 Teams): {round(ev_concentration * 100, 1)}%")
+
+# -----------------------------
+# TEAM STRENGTH OUTPUT
+# -----------------------------
+
+if team_strength_df is not None:
+    st.header("Team Strength (Customer ROI Signal)")
+    st.dataframe(
+        team_strength_df[["Team", "Team Strength", "Appearances", "Weight"]]
+        .sort_values("Weight", ascending=False),
+        use_container_width=True
+    )
 
 st.caption(
-    "This tool provides pricing bands, not a single price. "
-    "You still choose how aggressive you want to be."
+    "This engine classifies teams and formats for pricing intelligence, not exact EV. "
+    "It is designed to prevent irrational pricing and bad break structures."
 )
