@@ -11,7 +11,7 @@ st.set_page_config(
 )
 
 st.title("Beckett PYT Pricing Engine")
-st.caption("Floor-first PYT pricing with current + legacy MLB teams")
+st.caption("SlabStox-style PYT pricing using Beckett checklist data")
 
 # =========================================================
 # INPUTS
@@ -35,9 +35,9 @@ floor_price = col2.number_input(
 st.divider()
 
 # =========================================================
-# TEAM DEFINITIONS
+# CANONICAL MLB TEAMS (MODERN)
 # =========================================================
-CURRENT_MLB_TEAMS = {
+MLB_TEAMS = sorted([
     "Arizona Diamondbacks","Atlanta Braves","Baltimore Orioles","Boston Red Sox",
     "Chicago Cubs","Chicago White Sox","Cincinnati Reds","Cleveland Guardians",
     "Colorado Rockies","Detroit Tigers","Houston Astros","Kansas City Royals",
@@ -46,25 +46,26 @@ CURRENT_MLB_TEAMS = {
     "Philadelphia Phillies","Pittsburgh Pirates","San Diego Padres",
     "San Francisco Giants","Seattle Mariners","St. Louis Cardinals",
     "Tampa Bay Rays","Texas Rangers","Toronto Blue Jays","Washington Nationals"
-}
+])
 
-LEGACY_MLB_TEAMS = {
-    "Montreal Expos",
-    "Brooklyn Dodgers",
-    "California Angels",
-    "Washington Senators"
+# =========================================================
+# LEGACY → MODERN TEAM MERGE MAP
+# =========================================================
+TEAM_MERGE_MAP = {
+    "Montreal Expos": "Washington Nationals",
+    "Washington Senators": "Washington Nationals",
+    "Brooklyn Dodgers": "Los Angeles Dodgers",
+    "New York Giants": "San Francisco Giants",
+    "California Angels": "Los Angeles Angels",
+    "Anaheim Angels": "Los Angeles Angels",
 }
 
 # =========================================================
-# UPLOAD BECKETT CHECKLIST
+# UPLOAD CHECKLIST
 # =========================================================
-st.subheader("Upload Beckett Checklist (Excel)")
+st.subheader("Upload Beckett Checklist")
 
-file = st.file_uploader(
-    "Upload checklist (.xlsx)",
-    type=["xlsx"]
-)
-
+file = st.file_uploader("Upload checklist (.xlsx)", type=["xlsx"])
 if not file:
     st.stop()
 
@@ -74,7 +75,7 @@ if not file:
 df = pd.read_excel(file, sheet_name="Full Checklist")
 df.columns = [str(c).strip().lower() for c in df.columns]
 
-# Beckett layout: [#, Player, Team, Notes]
+# Expected Beckett layout
 df = df.iloc[:, 1:4]
 df.columns = ["player", "team", "notes"]
 
@@ -91,21 +92,13 @@ df = df[
 ]
 
 # =========================================================
-# CLASSIFY TEAM TYPE
+# MERGE LEGACY TEAMS INTO MODERN TEAMS
 # =========================================================
-def classify_team(team):
-    if team in CURRENT_MLB_TEAMS:
-        return "current"
-    elif team in LEGACY_MLB_TEAMS:
-        return "legacy"
-    else:
-        return "ignore"
-
-df["team_type"] = df["team"].apply(classify_team)
-df = df[df["team_type"] != "ignore"]
+df["team"] = df["team"].replace(TEAM_MERGE_MAP)
+df = df[df["team"].isin(MLB_TEAMS)]
 
 # =========================================================
-# TAG HOBBY SIGNALS
+# TAG CHECKLIST SIGNALS
 # =========================================================
 df["rookie"] = df["notes"].str.contains(r"\bRC\b", flags=re.I, regex=True)
 df["league_leaders"] = df["notes"].str.contains("league leaders", flags=re.I, regex=True)
@@ -113,10 +106,10 @@ df["combo"] = df["notes"].str.contains("combo", flags=re.I, regex=True)
 df["team_card"] = df["notes"].str.contains("team card", flags=re.I, regex=True)
 
 # =========================================================
-# CHASE SCORING (OPINIONATED, SIMPLE)
+# SCORE CHECKLIST STRENGTH
 # =========================================================
 def score_row(r):
-    score = 1  # base presence
+    score = 1
     if r["rookie"]:
         score += 3
     if r["league_leaders"]:
@@ -130,73 +123,86 @@ def score_row(r):
 df["score"] = df.apply(score_row, axis=1)
 
 # =========================================================
-# SPLIT CURRENT VS LEGACY
+# AGGREGATE BY TEAM (30 TEAMS)
 # =========================================================
-current_df = df[df["team_type"] == "current"]
-legacy_df = df[df["team_type"] == "legacy"]
-
-# =========================================================
-# AGGREGATE CURRENT TEAMS (ALWAYS 30)
-# =========================================================
-current_scores = (
-    current_df.groupby("team")["score"]
-    .sum()
-    .reindex(sorted(CURRENT_MLB_TEAMS), fill_value=0)
+team_summary = (
+    df.groupby("team")
+      .agg(
+          team_score=("score", "sum"),
+          card_count=("player", "count")
+      )
+      .reindex(MLB_TEAMS, fill_value=0)
+      .reset_index()
 )
 
-legacy_teams = sorted(legacy_df["team"].unique())
+total_score = team_summary["team_score"].sum()
+total_cards = team_summary["card_count"].sum()
 
-num_current = len(current_scores)
-num_legacy = len(legacy_teams)
-num_total = num_current + num_legacy
+team_summary["checklist_pct"] = team_summary["card_count"] / total_cards
+
+# =========================================================
+# TEAM STRENGTH LABELS (SLABSTOX-STYLE)
+# =========================================================
+def strength_label(score):
+    if score >= team_summary["team_score"].quantile(0.75):
+        return "Strong"
+    elif score >= team_summary["team_score"].quantile(0.35):
+        return "Average"
+    else:
+        return "Weak"
+
+team_summary["team_strength"] = team_summary["team_score"].apply(strength_label)
 
 # =========================================================
 # FLOOR-FIRST PRICING
 # =========================================================
-floor_total = num_total * floor_price
+floor_total = len(MLB_TEAMS) * floor_price
 remaining_pool = total_break_price - floor_total
 
 if remaining_pool <= 0:
     st.error("Floor price too high for total break price.")
     st.stop()
 
-total_current_score = current_scores.sum()
-
-# Allocate ONLY to current teams
-current_weights = current_scores / total_current_score
-current_prices = floor_price + (current_weights * remaining_pool)
-
-# Legacy teams stay at floor
-legacy_prices = pd.Series(
-    [floor_price] * num_legacy,
-    index=legacy_teams
+team_summary["weight_pct"] = team_summary["team_score"] / total_score
+team_summary["suggested_price"] = (
+    floor_price + (team_summary["weight_pct"] * remaining_pool)
 )
 
-# =========================================================
-# COMBINE RESULTS
-# =========================================================
-pricing = pd.concat([current_prices, legacy_prices]).reset_index()
-pricing.columns = ["team", "suggested_price"]
+# Round to hobby-friendly pricing
+team_summary["suggested_price"] = team_summary["suggested_price"].round(-1)
 
-# Hobby rounding
-pricing["suggested_price"] = pricing["suggested_price"].round(-1)
-
-# Final rounding reconciliation (safe)
-rounding_diff = total_break_price - pricing["suggested_price"].sum()
-pricing.loc[pricing["suggested_price"].idxmax(), "suggested_price"] += rounding_diff
+# Final rounding reconciliation
+rounding_diff = total_break_price - team_summary["suggested_price"].sum()
+team_summary.loc[team_summary["suggested_price"].idxmax(), "suggested_price"] += rounding_diff
 
 # =========================================================
-# OUTPUT
+# FORMAT OUTPUT
 # =========================================================
-st.subheader("Suggested PYT Pricing (Current + Legacy Teams)")
+team_summary["suggested_price"] = team_summary["suggested_price"].apply(lambda x: f"${int(x):,}")
+team_summary["checklist_pct"] = (team_summary["checklist_pct"] * 100).round(1).astype(str) + "%"
+
+# =========================================================
+# DISPLAY
+# =========================================================
+st.subheader("Suggested PYT Pricing (Merged Teams)")
+
+display_cols = [
+    "team",
+    "team_strength",
+    "checklist_pct",
+    "suggested_price"
+]
 
 st.dataframe(
-    pricing.sort_values("suggested_price", ascending=False),
+    team_summary[display_cols].sort_values(
+        by="suggested_price",
+        ascending=False,
+        key=lambda col: col.str.replace("$", "", regex=False).astype(int)
+    ),
     use_container_width=True
 )
 
 st.success(
-    "Pricing generated with floor-first logic.\n"
-    "Current teams receive chase allocation.\n"
-    "Legacy teams included without distorting pricing."
+    "Pricing generated using merged legacy teams, checklist strength, "
+    "and SlabStox-style presentation."
 )
