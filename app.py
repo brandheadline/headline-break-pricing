@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import re
+import numpy as np
 
 # =========================================================
 # APP CONFIG
@@ -11,7 +12,7 @@ st.set_page_config(
 )
 
 st.title("Break Pricing Engine")
-st.caption("Checklist + Market + Momentum pricing engine")
+st.caption("Checklist + Market + Momentum with Dynamic Anchors")
 
 # =========================================================
 # USER INPUTS
@@ -108,7 +109,7 @@ df["combo"] = df["notes"].str.contains("combo", flags=re.I, regex=True)
 df["team_card"] = df["notes"].str.contains("team card", flags=re.I, regex=True)
 
 # =========================================================
-# BASE SCORING (UNCHANGED CORE)
+# BASE SCORING (UNCHANGED)
 # =========================================================
 def score_row(r):
     score = 1
@@ -135,16 +136,11 @@ summary = (
 )
 
 # =========================================================
-# MOMENTUM LAYER (PHASE 1)
+# MOMENTUM (OPTIONAL)
 # =========================================================
 st.subheader("Momentum / News Signal")
 
-momentum_options = {
-    "Hot": 1.10,
-    "Neutral": 1.00,
-    "Cold": 0.90
-}
-
+momentum_map = {"Hot": 1.10, "Neutral": 1.00, "Cold": 0.90}
 summary["Momentum"] = "Neutral"
 
 with st.expander("Adjust Momentum (Optional)"):
@@ -156,9 +152,7 @@ with st.expander("Adjust Momentum (Optional)"):
             key=f"momentum_{i}"
         )
 
-summary["momentum_multiplier"] = summary["Momentum"].map(momentum_options)
-
-# Apply momentum
+summary["momentum_multiplier"] = summary["Momentum"].map(momentum_map)
 summary["adjusted_score"] = summary["base_score"] * summary["momentum_multiplier"]
 
 # =========================================================
@@ -176,17 +170,43 @@ else:
     checklist_strength = "Weak"
     break_premium = 150
 
-# =========================================================
-# TARGET GMV
-# =========================================================
 target_gmv = secondary_market + break_premium
 
 # =========================================================
-# PRICE DISTRIBUTION (RE-NORMALIZED)
+# DYNAMIC ANCHORS + TIERS
 # =========================================================
-summary["weight"] = summary["adjusted_score"] / summary["adjusted_score"].sum()
-summary["suggested_price"] = summary["weight"] * target_gmv
-summary["suggested_price"] = summary["suggested_price"].round(-1)
+summary = summary.sort_values("adjusted_score", ascending=False).reset_index(drop=True)
+
+# Top 3 anchors
+summary["tier"] = "Weak"
+summary.loc[0:2, "tier"] = "Anchor"
+summary.loc[3:7, "tier"] = "Strong"
+summary.loc[8:17, "tier"] = "Average"
+
+# =========================================================
+# PRICE BANDS (REALISTIC PYT)
+# =========================================================
+bands = {
+    "Anchor": (180, 260),
+    "Strong": (120, 180),
+    "Average": (70, 120),
+    "Weak": (40, 80),
+}
+
+def band_price(row):
+    lo, hi = bands[row["tier"]]
+    return lo + (hi - lo) * (
+        (row["adjusted_score"] - summary["adjusted_score"].min()) /
+        (summary["adjusted_score"].max() - summary["adjusted_score"].min() + 1e-6)
+    )
+
+summary["band_price"] = summary.apply(band_price, axis=1)
+
+# =========================================================
+# NORMALIZE TO TARGET GMV
+# =========================================================
+summary["weight"] = summary["band_price"] / summary["band_price"].sum()
+summary["suggested_price"] = (summary["weight"] * target_gmv).round(-1)
 
 # =========================================================
 # ECONOMICS
@@ -210,12 +230,16 @@ st.subheader("Pricing Output")
 
 summary["suggested_price"] = summary["suggested_price"].apply(lambda x: f"${int(x):,}")
 
+display_cols = [
+    group_col,
+    "tier",
+    "Momentum",
+    "card_count",
+    "suggested_price"
+]
+
 st.dataframe(
-    summary.sort_values(
-        "suggested_price",
-        ascending=False,
-        key=lambda col: col.str.replace("$", "", regex=False).astype(int)
-    ),
+    summary[display_cols],
     use_container_width=True
 )
 
