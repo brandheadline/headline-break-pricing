@@ -1,132 +1,150 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
+import re
 
 # =========================================================
 # APP CONFIG
 # =========================================================
-st.set_page_config(
-    page_title="Headline Break Pricing Tool",
-    layout="centered"
-)
-
-st.title("Headline Break Pricing Tool")
+st.set_page_config(page_title="Break Pricing Engine", layout="centered")
+st.title("Break Pricing Engine")
 
 # =========================================================
-# PRODUCT CONTEXT
+# PRODUCT INPUTS
 # =========================================================
-st.subheader("Product Context")
+st.subheader("Product Inputs")
 
-sport = st.selectbox(
-    "Select sport / category",
-    ["Baseball (MLB)", "Basketball (NBA)", "Football (NFL)"],
-    index=0
-)
+product_name = st.text_input("Product Name", "2026 Topps Baseball Hobby")
+
+col1, col2 = st.columns(2)
+box_cost = col1.number_input("Cost per Box ($)", min_value=0.0, value=150.0)
+num_boxes = col2.number_input("Number of Boxes", min_value=1, value=6)
+
+col3, col4 = st.columns(2)
+platform_fee_pct = col3.number_input("Platform Fee (%)", value=10.0)
+target_margin_pct = col4.number_input("Target Margin (%)", value=20.0)
 
 st.divider()
 
 # =========================================================
 # CHECKLIST UPLOAD
 # =========================================================
-st.subheader("Checklist Upload (Strongly Recommended)")
+st.subheader("Upload Checklist (Beckett Excel)")
 
-uploaded_file = st.file_uploader(
-    "Upload Beckett Checklist (Excel)",
-    type=["xlsx"]
-)
+file = st.file_uploader("Upload Excel", type=["xlsx"])
 
-if uploaded_file is None:
-    st.info("Please upload a Beckett checklist to continue.")
+if not file:
     st.stop()
 
-# =========================================================
-# LOAD RAW EXCEL (NO HEADER ASSUMPTIONS)
-# =========================================================
-try:
-    raw_df = pd.read_excel(uploaded_file, header=None)
-except Exception as e:
-    st.error("Failed to read Excel file.")
-    st.exception(e)
-    st.stop()
-
-st.caption("Raw shape:")
-st.write(raw_df.shape)
+raw = pd.read_excel(file, header=None)
 
 # =========================================================
-# IDENTIFY PRIMARY TEXT COLUMN (PLAYERS)
+# FLATTEN TO TEXT ROWS (FANATICS STYLE)
 # =========================================================
-def text_ratio(col):
-    return col.astype(str).str.contains(r"[A-Za-z]", regex=True).mean()
+rows = raw.astype(str).apply(lambda r: " ".join(r.values), axis=1)
 
-text_ratios = raw_df.apply(text_ratio)
-player_col_idx = text_ratios.idxmax()
-
-player_series = raw_df[player_col_idx].astype(str).str.strip()
+df = pd.DataFrame({"text": rows})
 
 # =========================================================
-# IDENTIFY CARD NUMBER COLUMN (MOSTLY NUMERIC)
+# SIGNAL TAGGING (OPINIONATED + SIMPLE)
 # =========================================================
-def numeric_ratio(col):
-    return pd.to_numeric(col, errors="coerce").notna().mean()
+def has(pattern):
+    return df["text"].str.contains(pattern, flags=re.IGNORECASE, regex=True)
 
-numeric_ratios = raw_df.apply(numeric_ratio)
-card_col_idx = numeric_ratios.idxmax()
+df["rookie"] = has(r"\bRC\b|rookie")
+df["auto"] = has(r"auto|autograph")
+df["patch"] = has(r"patch|relic|memorabilia")
+df["dual"] = has(r"dual|combo")
+df["legend"] = has(r"hall of fame|hof|legend")
 
-card_series = raw_df[card_col_idx]
-
-# =========================================================
-# BUILD DATAFRAME
-# =========================================================
-df = pd.DataFrame({
-    "player_raw": player_series,
-    "card_number": pd.to_numeric(card_series, errors="coerce")
-})
+df["rpa"] = df["rookie"] & df["auto"] & df["patch"]
 
 # =========================================================
-# CLEAN PLAYERS
+# PLAYER EXTRACTION (GOOD ENOUGH, NOT PERFECT)
 # =========================================================
-df["player"] = (
-    df["player_raw"]
-    .str.replace(",", "", regex=False)
-    .str.strip()
+def extract_player(text):
+    m = re.findall(r"[A-Z][a-z]+ [A-Z][a-z]+", text)
+    return m[0] if m else None
+
+df["player"] = df["text"].apply(extract_player)
+
+# =========================================================
+# SIGNAL COUNTS
+# =========================================================
+summary = {
+    "Total Autos": int(df["auto"].sum()),
+    "Rookie Autos": int((df["rookie"] & df["auto"]).sum()),
+    "RPAs": int(df["rpa"].sum()),
+    "Dual Autos": int(df["dual"].sum()),
+    "Legend Autos": int(df["legend"].sum())
+}
+
+st.subheader("Checklist Signal Summary")
+st.json(summary)
+
+# =========================================================
+# PLAYER CHASE SCORING (THIS IS THE SECRET SAUCE)
+# =========================================================
+def score_row(r):
+    score = 0
+    if r["rookie"] and r["auto"]: score += 5
+    if r["rpa"]: score += 7
+    if r["dual"]: score += 4
+    if r["legend"]: score += 3
+    if r["auto"]: score += 2
+    return score
+
+df["score"] = df.apply(score_row, axis=1)
+
+player_scores = (
+    df.dropna(subset=["player"])
+      .groupby("player")["score"]
+      .sum()
+      .sort_values(ascending=False)
 )
 
-# Remove garbage rows
-df = df[
-    (df["player"].notna()) &
-    (df["player"] != "") &
-    (~df["player"].str.lower().isin([
-        "base set", "nan"
-    ])) &
-    (~df["player"].str.contains("royals|yankees|dodgers|sox|mets", case=False))
-]
-
-df = df[df["card_number"].notna()]
-
-df.reset_index(drop=True, inplace=True)
+st.subheader("Top Chase Players")
+st.dataframe(player_scores.head(15))
 
 # =========================================================
-# SUCCESS
+# PRODUCT STRENGTH SCORE
 # =========================================================
-st.success("Checklist successfully parsed.")
+strength_score = player_scores.sum()
 
-st.subheader("Parsed Checklist Preview")
-st.dataframe(
-    df[["player", "card_number"]].head(50),
-    use_container_width=True
-)
-
-st.caption(
-    f"Rows loaded: {len(df)} | "
-    f"Unique players: {df['player'].nunique()} | "
-    f"Sport: {sport}"
-)
+st.metric("Product Strength Score", int(strength_score))
 
 # =========================================================
-# END v3
+# BREAK PRICE CALCULATION (FANATICS LOGIC)
 # =========================================================
-st.divider()
-st.info(
-    "Structure-aware ingestion complete.\n\n"
-    "Player extraction is now reliable. Team mapping comes next."
-)
+total_cost = box_cost * num_boxes
+fee_multiplier = 1 + (platform_fee_pct / 100)
+margin_multiplier = 1 + (target_margin_pct / 100)
+
+suggested_break_price = total_cost * fee_multiplier * margin_multiplier
+
+st.subheader("Suggested Break Economics")
+
+st.metric("Total Cost", f"${total_cost:,.2f}")
+st.metric("Suggested Break Price", f"${suggested_break_price:,.2f}")
+
+# =========================================================
+# TEAM BUCKETING (SIMPLIFIED PYT FRAMEWORK)
+# =========================================================
+st.subheader("PYT Team Buckets (Framework)")
+
+st.markdown("""
+**Tier 1 (Top Chases)**  
+• Teams with top 3–5 scored players  
+• Price aggressively  
+
+**Tier 2 (Mid)**  
+• Teams with at least one meaningful hit  
+• Price to move  
+
+**Floor Teams**  
+• No major autos or rookies  
+• Used to balance room  
+
+This mirrors how professional breakers structure PYT.
+""")
+
+st.success("Pricing framework generated. Adjust final numbers with market sanity check.")
