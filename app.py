@@ -1,220 +1,135 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 
-# =================================================
-# PAGE CONFIG
-# =================================================
+# -----------------------------
+# APP CONFIG
+# -----------------------------
 st.set_page_config(
-    page_title="Headline Break Pricing Engine v3.1",
+    page_title="Headline Break Pricing",
     layout="centered"
 )
 
-st.title("Headline Break Pricing Engine")
-st.caption("Checklist-aware. Sport-aware. Rookie-driven. No guessing.")
+st.title("Product Context")
 
-# =================================================
-# SPORT PROFILES
-# =================================================
-SPORT_PROFILES = {
-    "Baseball (MLB)": {
-        "rookie_keywords": ["rc", "rookie"],
-        "auto_keywords": ["auto", "autograph"],
-        "patch_keywords": ["patch", "relic", "memorabilia"],
-        "insert_keywords": ["insert"],
-        "variation_keywords": ["variation", "parallel"],
-        "weights": {
-            "base": 1.0,
-            "rookie": 3.0,
-            "auto": 6.0,
-            "patch": 7.0,
-            "insert": 2.0,
-            "variation": 2.5
-        }
-    },
-    "Football (NFL)": {
-        "rookie_keywords": ["rc", "rookie"],
-        "auto_keywords": ["auto", "autograph"],
-        "patch_keywords": ["patch", "shield", "logo"],
-        "insert_keywords": ["insert"],
-        "variation_keywords": ["parallel"],
-        "weights": {
-            "base": 1.0,
-            "rookie": 4.0,
-            "auto": 7.0,
-            "patch": 8.0,
-            "insert": 2.5,
-            "variation": 3.0
-        }
-    },
-    "Basketball (NBA)": {
-        "rookie_keywords": ["rc", "rookie"],
-        "auto_keywords": ["auto"],
-        "patch_keywords": ["patch", "tag", "logoman"],
-        "insert_keywords": ["insert"],
-        "variation_keywords": ["parallel"],
-        "weights": {
-            "base": 1.0,
-            "rookie": 4.5,
-            "auto": 7.5,
-            "patch": 9.0,
-            "insert": 3.0,
-            "variation": 3.5
-        }
-    },
-    "Soccer": {
-        "rookie_keywords": ["rc", "rookie"],
-        "auto_keywords": ["auto"],
-        "patch_keywords": ["patch"],
-        "insert_keywords": ["insert"],
-        "variation_keywords": ["parallel"],
-        "weights": {
-            "base": 1.0,
-            "rookie": 3.5,
-            "auto": 6.5,
-            "patch": 7.5,
-            "insert": 2.5,
-            "variation": 3.0
-        }
-    },
-    "Non-Sport (Star Wars / Disney)": {
-        "rookie_keywords": [],
-        "auto_keywords": ["auto"],
-        "patch_keywords": [],
-        "insert_keywords": ["insert"],
-        "variation_keywords": ["parallel"],
-        "weights": {
-            "base": 1.0,
-            "auto": 8.0,
-            "insert": 3.0,
-            "variation": 3.5
-        }
-    }
-}
+# -----------------------------
+# PRODUCT CONTEXT
+# -----------------------------
+sport = st.selectbox(
+    "Select sport / category",
+    options=["Baseball (MLB)", "Basketball (NBA)", "Football (NFL)"],
+    index=0
+)
 
-# =================================================
-# SPORT SELECTION
-# =================================================
-st.header("Product Context")
-sport = st.selectbox("Select sport / category", list(SPORT_PROFILES.keys()))
-profile = SPORT_PROFILES[sport]
+st.divider()
 
-# =================================================
-# CHECKLIST INGESTION
-# =================================================
-st.header("Checklist Upload (Strongly Recommended)")
-uploaded = st.file_uploader("Upload Beckett Checklist (Excel)", type=["xlsx"])
+# -----------------------------
+# CHECKLIST UPLOAD
+# -----------------------------
+st.subheader("Checklist Upload (Strongly Recommended)")
 
-if not uploaded:
-    st.info("Upload a checklist to continue.")
+uploaded_file = st.file_uploader(
+    "Upload Beckett Checklist (Excel)",
+    type=["xlsx"]
+)
+
+if uploaded_file is None:
+    st.info("Upload a Beckett checklist to continue.")
     st.stop()
 
-xls = pd.ExcelFile(uploaded)
-sheets = {s.lower(): s for s in xls.sheet_names}
-
-if "teams" not in sheets:
-    st.error("Checklist must contain a Teams sheet.")
+# -----------------------------
+# LOAD EXCEL SAFELY
+# -----------------------------
+try:
+    teams_df = pd.read_excel(uploaded_file)
+except Exception as e:
+    st.error("❌ Failed to read Excel file.")
+    st.exception(e)
     st.stop()
 
-teams_df = xls.parse(sheets["teams"])
-team_col = [c for c in teams_df.columns if "team" in c.lower()]
-if not team_col:
-    st.error("Teams sheet must contain a Team column.")
+# -----------------------------
+# VALIDATE DATAFRAME
+# -----------------------------
+if teams_df.empty:
+    st.error("❌ Uploaded file is empty.")
     st.stop()
 
-team_col = team_col[0]
+# -----------------------------
+# NORMALIZE COLUMN HEADERS
+# -----------------------------
+teams_df.columns = (
+    teams_df.columns
+    .map(lambda x: str(x).strip().lower() if x is not None else "")
+)
 
-# =================================================
-# CARD CLASSIFICATION
-# =================================================
-def score_row(row):
-    text = " ".join([str(v).lower() for v in row.values if pd.notna(v)])
-    score = profile["weights"]["base"]
+# Debug visibility (leave this in for now)
+st.write("Detected columns:", list(teams_df.columns))
 
-    for k in profile["rookie_keywords"]:
-        if k in text:
-            score += profile["weights"].get("rookie", 0)
+# -----------------------------
+# REQUIRED COLUMN DETECTION
+# -----------------------------
+def find_column(keyword_list):
+    for col in teams_df.columns:
+        for keyword in keyword_list:
+            if keyword in col:
+                return col
+    return None
 
-    for k in profile["auto_keywords"]:
-        if k in text:
-            score += profile["weights"].get("auto", 0)
+team_col = find_column(["team"])
+player_col = find_column(["player", "name"])
+card_col = find_column(["card", "description", "card name"])
 
-    for k in profile["patch_keywords"]:
-        if k in text:
-            score += profile["weights"].get("patch", 0)
+# -----------------------------
+# HARD FAIL IF REQUIRED DATA IS MISSING
+# -----------------------------
+missing = []
 
-    for k in profile["insert_keywords"]:
-        if k in text:
-            score += profile["weights"].get("insert", 0)
+if team_col is None:
+    missing.append("Team")
+if player_col is None:
+    missing.append("Player")
+if card_col is None:
+    missing.append("Card Description")
 
-    for k in profile["variation_keywords"]:
-        if k in text:
-            score += profile["weights"].get("variation", 0)
-
-    return score
-
-cards = []
-for sheet in xls.sheet_names:
-    df = xls.parse(sheet)
-    if team_col in df.columns:
-        df = df[[team_col]].copy()
-        df["score"] = df.apply(score_row, axis=1)
-        cards.append(df)
-
-cards_df = pd.concat(cards)
-team_strength = cards_df.groupby(team_col)["score"].sum().reset_index()
-team_strength.columns = ["Team", "RawScore"]
-team_strength["DemandPct"] = team_strength["RawScore"] / team_strength["RawScore"].sum() * 100
-team_strength = team_strength.sort_values("DemandPct", ascending=False)
-
-st.success("Checklist parsed and team demand calculated.")
-
-# =================================================
-# PRICING INPUTS
-# =================================================
-st.header("Pricing Inputs")
-
-case_cost = st.number_input("Case cost (direct)", value=800.0, step=25.0)
-market_price = st.number_input("Public sealed price (D&A / Blowout)", value=1700.0, step=25.0)
-fees = st.slider("Platform + processing fees (%)", 0, 20, 10)
-margin = st.slider("Target margin (%)", 0, 60, 30)
-
-net_floor = case_cost * (1 + fees / 100)
-target_total = net_floor * (1 + margin / 100)
-
-# =================================================
-# PRICING CURVES
-# =================================================
-def apply_curve(weights, total, mode):
-    if mode == "Aggressive":
-        adj = weights ** 1.35
-    elif mode == "Smoothed":
-        adj = weights ** 0.85
-    else:
-        adj = weights
-
-    pct = adj / adj.sum()
-    prices = pct * total
-    return (pct * 100).round(2), prices.round(2)
-
-# =================================================
-# OUTPUT
-# =================================================
-st.header("Per-Team Pricing")
-
-for mode in ["Aggressive", "Balanced", "Smoothed"]:
-    pct, prices = apply_curve(team_strength["DemandPct"], target_total, mode)
-    df = team_strength.copy()
-    df["Weight %"] = pct.values
-    df["Price ($)"] = prices.values
-
-    st.subheader(f"{mode} Strategy")
-    st.dataframe(
-        df[["Team", "Weight %", "Price ($)"]].sort_values("Price ($)", ascending=False),
-        use_container_width=True
+if missing:
+    st.error(
+        "❌ Missing required columns:\n\n"
+        + "\n".join([f"- {m}" for m in missing])
+        + "\n\nPlease verify the Beckett checklist format."
     )
+    st.stop()
 
-st.caption(
-    "Aggressive = top-heavy PYT | Balanced = fair market | Smoothed = fill-friendly. "
-    "All pricing sums exactly to target revenue."
+# -----------------------------
+# CLEAN CORE DATA
+# -----------------------------
+core_df = teams_df[[team_col, player_col, card_col]].copy()
+
+core_df.rename(
+    columns={
+        team_col: "team",
+        player_col: "player",
+        card_col: "card"
+    },
+    inplace=True
+)
+
+# Drop garbage rows
+core_df = core_df.dropna(how="all")
+core_df = core_df[core_df["team"].astype(str).str.len() > 0]
+
+# -----------------------------
+# SUCCESS STATE
+# -----------------------------
+st.success("✅ Checklist loaded successfully")
+
+st.subheader("Preview")
+st.dataframe(core_df.head(25), use_container_width=True)
+
+# -----------------------------
+# NEXT STEP PLACEHOLDER
+# -----------------------------
+st.divider()
+st.subheader("Next Step")
+st.info(
+    "Checklist successfully parsed.\n\n"
+    "Break pricing logic will attach here next."
 )
