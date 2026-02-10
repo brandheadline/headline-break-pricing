@@ -11,59 +11,42 @@ st.title("Break Pricing Engine")
 st.caption("Checklist + Market + Anchors + Momentum + Velocity")
 
 # =========================================================
-# USER INPUTS
+# BREAK INPUTS
 # =========================================================
 st.subheader("Break Inputs")
 
 c1, c2 = st.columns(2)
-
 break_format = c1.selectbox(
     "Break Format",
     ["PYT (Pick Your Team)", "PYP (Pick Your Player)"]
 )
-
-purchase_cost = c2.number_input(
-    "Your Purchase Cost ($)",
-    value=864,
-    step=50
-)
+purchase_cost = c2.number_input("Your Purchase Cost ($)", value=864, step=50)
 
 c3, c4 = st.columns(2)
-
 secondary_market = c3.number_input(
     "Secondary Market Reference (Dave & Adam’s)",
     value=1665,
     step=25
 )
-
-fanatics_fee_pct = c4.number_input(
-    "Fanatics Fee (%)",
-    value=10.0,
-    step=0.5
-)
+fanatics_fee_pct = c4.number_input("Fanatics Fee (%)", value=10.0, step=0.5)
 
 st.divider()
 
 # =========================================================
-# MARKET POPULARITY (CHECKBOX – GREEN WHEN ON)
+# MARKET POPULARITY (CHECKBOX)
 # =========================================================
 st.subheader("Market Popularity Adjustment")
-
 apply_market_popularity = st.checkbox(
     "Apply Market Popularity (recommended)",
     value=True,
     help="Applies long-term hobby liquidity bias for large vs small market teams"
 )
 
-# =========================================================
-# MARKET POPULARITY DEFINITIONS
-# =========================================================
 LARGE_MARKET = {
     "New York Yankees","Los Angeles Dodgers","Boston Red Sox",
     "Chicago Cubs","New York Mets","San Francisco Giants",
     "Philadelphia Phillies","Los Angeles Angels"
 }
-
 SMALL_MARKET = {
     "Miami Marlins","Oakland Athletics","Kansas City Royals",
     "Pittsburgh Pirates","Cleveland Guardians",
@@ -80,7 +63,7 @@ def market_mult(team):
     return 1.00
 
 # =========================================================
-# TEAM MERGE MAP
+# TEAM MERGE MAP (LEGACY → MODERN)
 # =========================================================
 TEAM_MERGE = {
     "Montreal Expos": "Washington Nationals",
@@ -95,17 +78,14 @@ TEAM_MERGE = {
 # UPLOAD BECKETT CHECKLIST
 # =========================================================
 st.subheader("Upload Beckett Checklist")
-
 file = st.file_uploader("Upload checklist (.xlsx)", type=["xlsx"])
 if not file:
     st.stop()
 
 df = pd.read_excel(file, sheet_name="Full Checklist")
 df.columns = [c.lower().strip() for c in df.columns]
-
 df = df.iloc[:, 1:4]
 df.columns = ["player", "team", "notes"]
-
 df = df.dropna(subset=["player", "team"])
 df["team"] = df["team"].replace(TEAM_MERGE)
 
@@ -116,20 +96,19 @@ df["rookie"] = df["notes"].str.contains(r"\bRC\b", flags=re.I, regex=True)
 df["league"] = df["notes"].str.contains("league leaders", flags=re.I, regex=True)
 df["combo"] = df["notes"].str.contains("combo", flags=re.I, regex=True)
 
-def score(r):
+def score_row(r):
     s = 1
     if r["rookie"]: s += 3
     if r["league"]: s += 2
     if r["combo"]: s += 2
     return s
 
-df["score"] = df.apply(score, axis=1)
+df["score"] = df.apply(score_row, axis=1)
 
 # =========================================================
 # GROUPING
 # =========================================================
 group_col = "team" if "PYT" in break_format else "player"
-
 summary = (
     df.groupby(group_col)
       .agg(base_score=("score", "sum"), card_count=("score", "count"))
@@ -146,7 +125,6 @@ vel_map = {"Fast": 1.15, "Normal": 1.00, "Slow": 0.85}
 
 if "mom_state" not in st.session_state:
     st.session_state.mom_state = {row[group_col]: "Neutral" for _, row in summary.iterrows()}
-
 if "vel_state" not in st.session_state:
     st.session_state.vel_state = {row[group_col]: "Normal" for _, row in summary.iterrows()}
 
@@ -160,7 +138,6 @@ for _, row in summary.iterrows():
         index=["Neutral","Hot","Cold"].index(st.session_state.mom_state[name]),
         key=f"mom_{name}"
     )
-
     st.session_state.vel_state[name] = c.selectbox(
         "Velocity", ["Normal", "Fast", "Slow"],
         index=["Normal","Fast","Slow"].index(st.session_state.vel_state[name]),
@@ -184,10 +161,11 @@ summary["adjusted_weight"] = (
 )
 
 # =========================================================
-# TARGET GMV
+# TARGET GMV (SECONDARY + PREMIUM)
 # =========================================================
 avg = summary["base_score"].mean()
-premium = 500 if avg >= summary["base_score"].quantile(0.75) else 300 if avg >= summary["base_score"].quantile(0.35) else 150
+premium = 500 if avg >= summary["base_score"].quantile(0.75) else \
+          300 if avg >= summary["base_score"].quantile(0.35) else 150
 target_gmv = secondary_market + premium
 
 # =========================================================
@@ -195,10 +173,8 @@ target_gmv = secondary_market + premium
 # =========================================================
 summary["weight"] = summary["adjusted_weight"] / summary["adjusted_weight"].sum()
 summary["raw_price"] = summary["weight"] * target_gmv
-
 summary["raw_price"] = summary["raw_price"].clip(lower=40)
 summary["raw_price"] *= target_gmv / summary["raw_price"].sum()
-
 summary["suggested_price"] = summary["raw_price"].round(-1).astype(int)
 
 # =========================================================
@@ -209,42 +185,102 @@ fees = gross * fanatics_fee_pct / 100
 profit = gross - fees - purchase_cost
 
 # =========================================================
-# DISPLAY
+# PRICING OUTPUT
 # =========================================================
 st.subheader("Pricing Output")
-
 summary["Price"] = summary["suggested_price"].apply(lambda x: f"${x:,}")
-
-st.dataframe(
-    summary[[group_col, "card_count", "Price"]],
-    use_container_width=True
-)
+st.dataframe(summary[[group_col, "card_count", "Price"]], use_container_width=True)
 
 st.subheader("Break Summary")
-
 a, b, c = st.columns(3)
 a.metric("Target GMV", f"${target_gmv:,.0f}")
 b.metric("Net Profit", f"${profit:,.0f}")
 c.metric("Fees", f"${fees:,.0f}")
 
 # =========================================================
-# EXPLANATION
+# FANATICS-STYLE PRICING METHODOLOGY PANEL
 # =========================================================
 st.divider()
-st.subheader("How These Prices Are Calculated")
-
 st.markdown("""
-**This engine mirrors real-world PYT pricing behavior.**
+<style>
+.pricing-card {
+    background-color: #f8fafc;
+    border: 1px solid #e5e7eb;
+    border-radius: 12px;
+    padding: 24px;
+    max-width: 900px;
+}
+.pricing-card h3 {
+    margin-top: 0;
+    font-size: 20px;
+    font-weight: 600;
+}
+.pricing-row {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 14px;
+}
+.pricing-label {
+    min-width: 180px;
+    font-weight: 600;
+    color: #111827;
+}
+.pricing-desc {
+    color: #374151;
+}
+.pricing-footer {
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px solid #e5e7eb;
+    color: #4b5563;
+    font-size: 14px;
+}
+</style>
 
-• Anchors pricing to the secondary market  
-• Applies a break premium based on checklist quality  
-• Scores checklist depth (base cards, rookies, combos, league leaders)  
-• Applies behavioral adjustments:
-  – Market popularity (optional)
-  – Momentum (news, hype)
-  – Velocity (sell-through speed)
+<div class="pricing-card">
+    <h3>How Pricing Is Calculated</h3>
 
-These adjustments **do not create value — they redistribute it**.
+    <div class="pricing-row">
+        <div class="pricing-label">Market Anchor</div>
+        <div class="pricing-desc">
+            Pricing begins from the secondary market reference, representing the sealed wax alternative.
+        </div>
+    </div>
 
-All prices are normalized so total GMV remains accurate and profitability is transparent.
-""")
+    <div class="pricing-row">
+        <div class="pricing-label">Break Premium</div>
+        <div class="pricing-desc">
+            A premium is applied based on overall checklist quality to reflect live break demand.
+        </div>
+    </div>
+
+    <div class="pricing-row">
+        <div class="pricing-label">Checklist Scoring</div>
+        <div class="pricing-desc">
+            Teams are weighted using checklist depth signals including base cards,
+            rookies, combo cards, and league leader cards.
+        </div>
+    </div>
+
+    <div class="pricing-row">
+        <div class="pricing-label">Behavioral Adjustments</div>
+        <div class="pricing-desc">
+            Optional modifiers account for long-term market popularity,
+            short-term momentum (news/hype),
+            and sell-through velocity.
+        </div>
+    </div>
+
+    <div class="pricing-row">
+        <div class="pricing-label">GMV Normalization</div>
+        <div class="pricing-desc">
+            All spot prices are normalized so total GMV remains accurate.
+            Adjustments redistribute value rather than create it.
+        </div>
+    </div>
+
+    <div class="pricing-footer">
+        Prices are generated for internal decision-making and reflect real-world PYT pricing behavior.
+    </div>
+</div>
+""", unsafe_allow_html=True)
