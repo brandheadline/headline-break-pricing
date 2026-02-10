@@ -6,13 +6,9 @@ import numpy as np
 # =========================================================
 # APP CONFIG
 # =========================================================
-st.set_page_config(
-    page_title="Break Pricing Engine",
-    layout="centered"
-)
-
+st.set_page_config(page_title="Break Pricing Engine", layout="centered")
 st.title("Break Pricing Engine")
-st.caption("Checklist + Market + Momentum with Dynamic Anchors")
+st.caption("Checklist + Market + Momentum + Popularity")
 
 # =========================================================
 # USER INPUTS
@@ -49,7 +45,31 @@ fanatics_fee_pct = col4.number_input(
 st.divider()
 
 # =========================================================
-# MLB TEAMS (MODERN)
+# MARKET POPULARITY (HARD-CODED)
+# =========================================================
+LARGE_MARKET_TEAMS = {
+    "New York Yankees", "New York Mets",
+    "Los Angeles Dodgers", "Los Angeles Angels",
+    "Boston Red Sox", "Chicago Cubs",
+    "San Francisco Giants", "Philadelphia Phillies"
+}
+
+SMALL_MARKET_TEAMS = {
+    "Miami Marlins", "Oakland Athletics",
+    "Kansas City Royals", "Pittsburgh Pirates",
+    "Cleveland Guardians", "Colorado Rockies",
+    "Milwaukee Brewers", "Tampa Bay Rays"
+}
+
+def market_multiplier(team):
+    if team in LARGE_MARKET_TEAMS:
+        return 1.05
+    if team in SMALL_MARKET_TEAMS:
+        return 0.95
+    return 1.00
+
+# =========================================================
+# MLB TEAMS + MERGE MAP
 # =========================================================
 MLB_TEAMS = sorted([
     "Arizona Diamondbacks","Atlanta Braves","Baltimore Orioles","Boston Red Sox",
@@ -72,7 +92,7 @@ TEAM_MERGE_MAP = {
 }
 
 # =========================================================
-# UPLOAD BECKETT CHECKLIST
+# UPLOAD CHECKLIST
 # =========================================================
 st.subheader("Upload Beckett Checklist")
 
@@ -86,31 +106,22 @@ df.columns = [str(c).strip().lower() for c in df.columns]
 df = df.iloc[:, 1:4]
 df.columns = ["player", "team", "notes"]
 
-df["player"] = df["player"].astype(str).str.strip()
-df["team"] = df["team"].astype(str).str.strip()
-df["notes"] = df["notes"].astype(str).str.strip()
-
 df = df[
-    (df["player"] != "") &
-    (~df["player"].str.contains("nan", case=False)) &
-    (df["team"] != "") &
-    (~df["team"].str.contains("nan", case=False))
+    (~df["player"].isna()) &
+    (~df["team"].isna())
 ]
 
 df["team"] = df["team"].replace(TEAM_MERGE_MAP)
 df = df[df["team"].isin(MLB_TEAMS)]
 
 # =========================================================
-# CHECKLIST SIGNAL TAGGING
+# CHECKLIST SIGNALS
 # =========================================================
 df["rookie"] = df["notes"].str.contains(r"\bRC\b", flags=re.I, regex=True)
 df["league_leaders"] = df["notes"].str.contains("league leaders", flags=re.I, regex=True)
 df["combo"] = df["notes"].str.contains("combo", flags=re.I, regex=True)
 df["team_card"] = df["notes"].str.contains("team card", flags=re.I, regex=True)
 
-# =========================================================
-# BASE SCORING (UNCHANGED)
-# =========================================================
 def score_row(r):
     score = 1
     if r["rookie"]: score += 3
@@ -128,15 +139,12 @@ group_col = "team" if "PYT" in break_format else "player"
 
 summary = (
     df.groupby(group_col)
-      .agg(
-          base_score=("score", "sum"),
-          card_count=("score", "count")
-      )
+      .agg(base_score=("score", "sum"), card_count=("score", "count"))
       .reset_index()
 )
 
 # =========================================================
-# MOMENTUM (OPTIONAL)
+# MOMENTUM (UNCHANGED)
 # =========================================================
 st.subheader("Momentum / News Signal")
 
@@ -146,29 +154,38 @@ summary["Momentum"] = "Neutral"
 with st.expander("Adjust Momentum (Optional)"):
     for i in summary.index:
         summary.at[i, "Momentum"] = st.selectbox(
-            f"{summary.at[i, group_col]}",
+            summary.at[i, group_col],
             ["Neutral", "Hot", "Cold"],
             index=0,
-            key=f"momentum_{i}"
+            key=f"mom_{i}"
         )
 
 summary["momentum_multiplier"] = summary["Momentum"].map(momentum_map)
-summary["adjusted_score"] = summary["base_score"] * summary["momentum_multiplier"]
 
 # =========================================================
-# CHECKLIST STRENGTH → BREAK PREMIUM
+# APPLY POPULARITY + MOMENTUM
+# =========================================================
+summary["market_multiplier"] = summary[group_col].apply(
+    lambda x: market_multiplier(x) if break_format.startswith("PYT") else 1.0
+)
+
+summary["adjusted_score"] = (
+    summary["base_score"] *
+    summary["momentum_multiplier"] *
+    summary["market_multiplier"]
+)
+
+# =========================================================
+# BREAK PREMIUM
 # =========================================================
 avg_score = summary["base_score"].mean()
 
 if avg_score >= summary["base_score"].quantile(0.75):
-    checklist_strength = "Strong"
-    break_premium = 500
+    checklist_strength, break_premium = "Strong", 500
 elif avg_score >= summary["base_score"].quantile(0.35):
-    checklist_strength = "Average"
-    break_premium = 300
+    checklist_strength, break_premium = "Average", 300
 else:
-    checklist_strength = "Weak"
-    break_premium = 150
+    checklist_strength, break_premium = "Weak", 150
 
 target_gmv = secondary_market + break_premium
 
@@ -177,14 +194,13 @@ target_gmv = secondary_market + break_premium
 # =========================================================
 summary = summary.sort_values("adjusted_score", ascending=False).reset_index(drop=True)
 
-# Top 3 anchors
 summary["tier"] = "Weak"
 summary.loc[0:2, "tier"] = "Anchor"
 summary.loc[3:7, "tier"] = "Strong"
 summary.loc[8:17, "tier"] = "Average"
 
 # =========================================================
-# PRICE BANDS (REALISTIC PYT)
+# PRICE BANDS
 # =========================================================
 bands = {
     "Anchor": (180, 260),
@@ -203,7 +219,7 @@ def band_price(row):
 summary["band_price"] = summary.apply(band_price, axis=1)
 
 # =========================================================
-# NORMALIZE TO TARGET GMV
+# NORMALIZE TO GMV
 # =========================================================
 summary["weight"] = summary["band_price"] / summary["band_price"].sum()
 summary["suggested_price"] = (summary["weight"] * target_gmv).round(-1)
@@ -211,17 +227,12 @@ summary["suggested_price"] = (summary["weight"] * target_gmv).round(-1)
 # =========================================================
 # ECONOMICS
 # =========================================================
-gross_revenue = summary["suggested_price"].sum()
-fanatics_fees = gross_revenue * (fanatics_fee_pct / 100)
-net_profit = gross_revenue - fanatics_fees - purchase_cost
-profit_pct = (net_profit / purchase_cost) * 100
+gross = summary["suggested_price"].sum()
+fees = gross * fanatics_fee_pct / 100
+profit = gross - fees - purchase_cost
+profit_pct = (profit / purchase_cost) * 100
 
-if net_profit >= 800:
-    profit_quality = "Strong"
-elif net_profit >= 400:
-    profit_quality = "Acceptable"
-else:
-    profit_quality = "Thin"
+profit_quality = "Strong" if profit >= 800 else "Acceptable" if profit >= 400 else "Thin"
 
 # =========================================================
 # DISPLAY
@@ -230,24 +241,16 @@ st.subheader("Pricing Output")
 
 summary["suggested_price"] = summary["suggested_price"].apply(lambda x: f"${int(x):,}")
 
-display_cols = [
-    group_col,
-    "tier",
-    "Momentum",
-    "card_count",
-    "suggested_price"
-]
-
 st.dataframe(
-    summary[display_cols],
+    summary[[group_col, "tier", "Momentum", "card_count", "suggested_price"]],
     use_container_width=True
 )
 
 st.subheader("Break Summary")
 
-colA, colB, colC, colD = st.columns(4)
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Checklist Strength", checklist_strength)
+c2.metric("Target GMV", f"${target_gmv:,.0f}")
+c3.metric("Net Profit", f"${profit:,.0f}", f"{profit_pct:.1f}%")
+c4.metric("Profit Quality", profit_quality)
 
-colA.metric("Checklist Strength", checklist_strength)
-colB.metric("Target GMV", f"${target_gmv:,.0f}")
-colC.metric("Net Profit", f"${net_profit:,.0f}", f"{profit_pct:.1f}%")
-colD.metric("Profit Quality", profit_quality)
