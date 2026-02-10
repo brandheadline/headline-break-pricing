@@ -7,19 +7,6 @@ import numpy as np
 # APP CONFIG
 # =========================================================
 st.set_page_config(page_title="Break Pricing Engine", layout="centered")
-
-# --- Toggle color override (GREEN = ON) ---
-st.markdown("""
-<style>
-div[data-testid="stToggle"] label {
-    font-weight: 600;
-}
-div[data-testid="stToggle"] input:checked + div {
-    background-color: #22c55e !important; /* green */
-}
-</style>
-""", unsafe_allow_html=True)
-
 st.title("Break Pricing Engine")
 st.caption("Checklist + Market + Anchors + Momentum + Velocity")
 
@@ -58,11 +45,11 @@ fanatics_fee_pct = c4.number_input(
 st.divider()
 
 # =========================================================
-# MARKET POPULARITY TOGGLE
+# MARKET POPULARITY (CHECKBOX – GREEN WHEN ON)
 # =========================================================
 st.subheader("Market Popularity Adjustment")
 
-apply_market_popularity = st.toggle(
+apply_market_popularity = st.checkbox(
     "Apply Market Popularity (recommended)",
     value=True,
     help="Applies long-term hobby liquidity bias for large vs small market teams"
@@ -247,17 +234,17 @@ st.divider()
 st.subheader("How These Prices Are Calculated")
 
 st.markdown("""
-**This pricing engine mirrors real-world PYT behavior.**
+**This engine mirrors real-world PYT pricing behavior.**
 
-• Anchors to secondary market pricing  
+• Anchors pricing to the secondary market  
 • Applies a break premium based on checklist quality  
-• Scores checklist depth (base, rookies, combos, league leaders)  
+• Scores checklist depth (base cards, rookies, combos, league leaders)  
 • Applies behavioral adjustments:
-  – Market popularity (toggleable)
-  – Momentum (news/hype)
+  – Market popularity (optional)
+  – Momentum (news, hype)
   – Velocity (sell-through speed)
 
 These adjustments **do not create value — they redistribute it**.
 
-All prices are normalized to ensure total GMV remains accurate and profit is transparent.
+All prices are normalized so total GMV remains accurate and profitability is transparent.
 """)
