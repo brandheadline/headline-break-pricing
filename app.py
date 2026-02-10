@@ -5,50 +5,60 @@ import re
 # =========================================================
 # APP CONFIG
 # =========================================================
-st.set_page_config(page_title="Break Pricing Engine", layout="centered")
-st.title("Break Pricing Engine")
+st.set_page_config(
+    page_title="PYT Break Pricing Engine",
+    layout="centered"
+)
+
+st.title("PYT Break Pricing Engine")
+st.caption("Fanatics-style pricing framework for breakers")
 
 # =========================================================
-# PRODUCT INPUTS
+# BREAK INPUTS
 # =========================================================
-st.subheader("Product Inputs")
-
-product_name = st.text_input("Product Name", "2026 Topps Baseball Hobby")
+st.subheader("Break Inputs")
 
 col1, col2 = st.columns(2)
-box_cost = col1.number_input("Cost per Box ($)", min_value=0.0, value=150.0)
-num_boxes = col2.number_input("Number of Boxes", min_value=1, value=6)
 
-col3, col4 = st.columns(2)
-platform_fee_pct = col3.number_input("Platform Fee (%)", value=10.0)
-target_margin_pct = col4.number_input("Target Margin (%)", value=20.0)
+total_break_price = col1.number_input(
+    "Target Total Break Price ($)",
+    value=4500,
+    step=50
+)
+
+min_team_price = col2.number_input(
+    "Floor Team Price ($)",
+    value=35,
+    step=5
+)
 
 st.divider()
 
 # =========================================================
-# CHECKLIST UPLOAD
+# UPLOAD CHECKLIST
 # =========================================================
-st.subheader("Upload Checklist (Beckett Excel)")
+st.subheader("Checklist Upload (Beckett Excel)")
 
-file = st.file_uploader("Upload Excel", type=["xlsx"])
+checklist_file = st.file_uploader(
+    "Upload checklist (.xlsx)",
+    type=["xlsx"]
+)
 
-if not file:
+if not checklist_file:
     st.stop()
 
-raw = pd.read_excel(file, header=None)
+# Read raw, no header assumptions
+raw = pd.read_excel(checklist_file, header=None)
 
-# =========================================================
-# FLATTEN TO TEXT ROWS (FANATICS STYLE)
-# =========================================================
+# Flatten rows into text blobs
 rows = raw.astype(str).apply(lambda r: " ".join(r.values), axis=1)
-
 df = pd.DataFrame({"text": rows})
 
 # =========================================================
-# SIGNAL TAGGING (OPINIONATED + SIMPLE)
+# SIGNAL TAGGING (HOBBY HEURISTICS)
 # =========================================================
 def has(pattern):
-    return df["text"].str.contains(pattern, flags=re.IGNORECASE, regex=True)
+    return df["text"].str.contains(pattern, flags=re.I, regex=True)
 
 df["rookie"] = has(r"\bRC\b|rookie")
 df["auto"] = has(r"auto|autograph")
@@ -59,92 +69,125 @@ df["legend"] = has(r"hall of fame|hof|legend")
 df["rpa"] = df["rookie"] & df["auto"] & df["patch"]
 
 # =========================================================
-# PLAYER EXTRACTION (GOOD ENOUGH, NOT PERFECT)
+# PLAYER EXTRACTION (GOOD-ENOUGH, INDUSTRY STANDARD)
 # =========================================================
 def extract_player(text):
     m = re.findall(r"[A-Z][a-z]+ [A-Z][a-z]+", text)
     return m[0] if m else None
 
 df["player"] = df["text"].apply(extract_player)
+df = df.dropna(subset=["player"])
 
 # =========================================================
-# SIGNAL COUNTS
+# PLAYER CHASE SCORING (OPINIONATED & SIMPLE)
 # =========================================================
-summary = {
-    "Total Autos": int(df["auto"].sum()),
-    "Rookie Autos": int((df["rookie"] & df["auto"]).sum()),
-    "RPAs": int(df["rpa"].sum()),
-    "Dual Autos": int(df["dual"].sum()),
-    "Legend Autos": int(df["legend"].sum())
-}
-
-st.subheader("Checklist Signal Summary")
-st.json(summary)
-
-# =========================================================
-# PLAYER CHASE SCORING (THIS IS THE SECRET SAUCE)
-# =========================================================
-def score_row(r):
+def chase_score(row):
     score = 0
-    if r["rookie"] and r["auto"]: score += 5
-    if r["rpa"]: score += 7
-    if r["dual"]: score += 4
-    if r["legend"]: score += 3
-    if r["auto"]: score += 2
+    if row["rpa"]:
+        score += 10
+    elif row["rookie"] and row["auto"]:
+        score += 7
+    elif row["auto"]:
+        score += 4
+
+    if row["dual"]:
+        score += 3
+    if row["legend"]:
+        score += 2
+
     return score
 
-df["score"] = df.apply(score_row, axis=1)
+df["score"] = df.apply(chase_score, axis=1)
 
-player_scores = (
-    df.dropna(subset=["player"])
-      .groupby("player")["score"]
-      .sum()
-      .sort_values(ascending=False)
+# =========================================================
+# UPLOAD PLAYER → TEAM MAP
+# =========================================================
+st.subheader("Player → Team Mapping")
+
+team_file = st.file_uploader(
+    "Upload player-team mapping (.csv)",
+    type=["csv"],
+    help="CSV must contain columns: player, team"
 )
 
-st.subheader("Top Chase Players")
-st.dataframe(player_scores.head(15))
+if not team_file:
+    st.stop()
+
+team_map = pd.read_csv(team_file)
+team_map.columns = [c.lower().strip() for c in team_map.columns]
+
+if "player" not in team_map.columns or "team" not in team_map.columns:
+    st.error("CSV must contain 'player' and 'team' columns.")
+    st.stop()
+
+team_map["player"] = team_map["player"].astype(str).str.strip()
+team_map["team"] = team_map["team"].astype(str).str.strip()
+
+# Merge
+df = df.merge(team_map, on="player", how="left")
+df = df.dropna(subset=["team"])
 
 # =========================================================
-# PRODUCT STRENGTH SCORE
+# TEAM AGGREGATION
 # =========================================================
-strength_score = player_scores.sum()
+team_scores = (
+    df.groupby("team")["score"]
+    .sum()
+    .sort_values(ascending=False)
+)
 
-st.metric("Product Strength Score", int(strength_score))
+total_score = team_scores.sum()
+
+pricing = (
+    team_scores
+    .reset_index()
+    .rename(columns={"score": "team_score"})
+)
+
+pricing["weight_pct"] = pricing["team_score"] / total_score
+pricing["raw_price"] = pricing["weight_pct"] * total_break_price
 
 # =========================================================
-# BREAK PRICE CALCULATION (FANATICS LOGIC)
+# HOBBY ROUNDING & FLOORS
 # =========================================================
-total_cost = box_cost * num_boxes
-fee_multiplier = 1 + (platform_fee_pct / 100)
-margin_multiplier = 1 + (target_margin_pct / 100)
+pricing["suggested_price"] = (
+    pricing["raw_price"]
+    .round(-1)               # round to nearest $10
+    .clip(lower=min_team_price)
+)
 
-suggested_break_price = total_cost * fee_multiplier * margin_multiplier
-
-st.subheader("Suggested Break Economics")
-
-st.metric("Total Cost", f"${total_cost:,.2f}")
-st.metric("Suggested Break Price", f"${suggested_break_price:,.2f}")
+# Normalize back to total (minor correction)
+price_diff = total_break_price - pricing["suggested_price"].sum()
+if abs(price_diff) >= 10:
+    pricing.loc[0, "suggested_price"] += price_diff
 
 # =========================================================
-# TEAM BUCKETING (SIMPLIFIED PYT FRAMEWORK)
+# OUTPUT
 # =========================================================
-st.subheader("PYT Team Buckets (Framework)")
+st.subheader("Suggested PYT Pricing (Copy This)")
 
-st.markdown("""
-**Tier 1 (Top Chases)**  
-• Teams with top 3–5 scored players  
-• Price aggressively  
+st.dataframe(
+    pricing[[
+        "team",
+        "team_score",
+        "weight_pct",
+        "suggested_price"
+    ]].sort_values("suggested_price", ascending=False),
+    use_container_width=True
+)
 
-**Tier 2 (Mid)**  
-• Teams with at least one meaningful hit  
-• Price to move  
+st.success("Pricing generated. Use as a sanity check or direct copy for Fanatics PYT.")
 
-**Floor Teams**  
-• No major autos or rookies  
-• Used to balance room  
+# =========================================================
+# OPTIONAL INSIGHT
+# =========================================================
+with st.expander("Why teams are priced this way"):
+    st.markdown("""
+This pricing reflects **relative chase weight**, not exact EV.
 
-This mirrors how professional breakers structure PYT.
+• Teams with elite rookie autos, RPAs, or duals float to the top  
+• Mid teams price to move  
+• Floor teams stabilize the room  
+
+This mirrors how experienced breakers price quickly and consistently.
 """)
-
-st.success("Pricing framework generated. Adjust final numbers with market sanity check.")
