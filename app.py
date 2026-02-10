@@ -45,7 +45,7 @@ fanatics_fee_pct = col4.number_input(
 st.divider()
 
 # =========================================================
-# MARKET POPULARITY (STABLE)
+# MARKET POPULARITY (STABLE, HARD-CODED)
 # =========================================================
 LARGE_MARKET_TEAMS = {
     "New York Yankees","New York Mets",
@@ -144,42 +144,57 @@ summary = (
 )
 
 # =========================================================
-# MOMENTUM (UNCHANGED)
+# STATEFUL MOMENTUM + VELOCITY
 # =========================================================
-st.subheader("Momentum / News")
+st.subheader("Momentum & Market Velocity")
 
 momentum_map = {"Hot": 1.10, "Neutral": 1.00, "Cold": 0.90}
-summary["Momentum"] = "Neutral"
-
-with st.expander("Momentum Override"):
-    for i in summary.index:
-        summary.at[i, "Momentum"] = st.selectbox(
-            summary.at[i, group_col],
-            ["Neutral", "Hot", "Cold"],
-            index=0,
-            key=f"mom_{i}"
-        )
-
-summary["momentum_multiplier"] = summary["Momentum"].map(momentum_map)
-
-# =========================================================
-# VELOCITY (BREAKNINJA-LIKE)
-# =========================================================
-st.subheader("Market Velocity (BreakNinja-style)")
-
 velocity_map = {"Fast": 1.05, "Normal": 1.00, "Slow": 0.95}
-summary["Velocity"] = "Normal"
 
-with st.expander("Velocity Override"):
-    for i in summary.index:
-        summary.at[i, "Velocity"] = st.selectbox(
-            summary.at[i, group_col],
-            ["Fast", "Normal", "Slow"],
-            index=1,
-            key=f"vel_{i}"
-        )
+# Initialize state ONCE
+if "momentum_state" not in st.session_state:
+    st.session_state.momentum_state = {
+        row[group_col]: "Neutral" for _, row in summary.iterrows()
+    }
 
-summary["velocity_multiplier"] = summary["Velocity"].map(velocity_map)
+if "velocity_state" not in st.session_state:
+    st.session_state.velocity_state = {
+        row[group_col]: "Normal" for _, row in summary.iterrows()
+    }
+
+# Render controls (always visible)
+for _, row in summary.iterrows():
+    name = row[group_col]
+
+    colA, colB, colC = st.columns([3, 2, 2])
+
+    colA.markdown(f"**{name}**")
+
+    st.session_state.momentum_state[name] = colB.selectbox(
+        "Momentum",
+        ["Neutral", "Hot", "Cold"],
+        index=["Neutral", "Hot", "Cold"].index(
+            st.session_state.momentum_state[name]
+        ),
+        key=f"mom_{name}"
+    )
+
+    st.session_state.velocity_state[name] = colC.selectbox(
+        "Velocity",
+        ["Normal", "Fast", "Slow"],
+        index=["Normal", "Fast", "Slow"].index(
+            st.session_state.velocity_state[name]
+        ),
+        key=f"vel_{name}"
+    )
+
+summary["momentum_multiplier"] = summary[group_col].map(
+    lambda x: momentum_map[st.session_state.momentum_state[x]]
+)
+
+summary["velocity_multiplier"] = summary[group_col].map(
+    lambda x: velocity_map[st.session_state.velocity_state[x]]
+)
 
 # =========================================================
 # APPLY ALL MODIFIERS
@@ -273,3 +288,4 @@ c1.metric("Checklist Strength", checklist_strength)
 c2.metric("Target GMV", f"${target_gmv:,.0f}")
 c3.metric("Net Profit", f"${profit:,.0f}", f"{profit_pct:.1f}%")
 c4.metric("Profit Quality", profit_quality)
+
