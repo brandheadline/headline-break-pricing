@@ -8,7 +8,7 @@ import numpy as np
 # =========================================================
 st.set_page_config(page_title="Break Pricing Engine", layout="centered")
 st.title("Break Pricing Engine")
-st.caption("Checklist + Market + Momentum + Popularity + Velocity")
+st.caption("Checklist + Market + Anchors + Momentum + Velocity")
 
 # =========================================================
 # USER INPUTS
@@ -45,7 +45,7 @@ fanatics_fee_pct = col4.number_input(
 st.divider()
 
 # =========================================================
-# MARKET POPULARITY
+# MARKET POPULARITY (STRUCTURAL, STABLE)
 # =========================================================
 LARGE_MARKET_TEAMS = {
     "New York Yankees","New York Mets",
@@ -69,7 +69,7 @@ def market_multiplier(team):
     return 1.00
 
 # =========================================================
-# MLB TEAMS + MERGE MAP
+# MLB TEAMS + LEGACY MERGE MAP
 # =========================================================
 MLB_TEAMS = sorted([
     "Arizona Diamondbacks","Atlanta Braves","Baltimore Orioles","Boston Red Sox",
@@ -103,6 +103,7 @@ if not file:
 df = pd.read_excel(file, sheet_name="Full Checklist")
 df.columns = [str(c).strip().lower() for c in df.columns]
 
+# Beckett layout: index | player | team | notes
 df = df.iloc[:, 1:4]
 df.columns = ["player", "team", "notes"]
 
@@ -133,13 +134,16 @@ def score_row(r):
 df["score"] = df.apply(score_row, axis=1)
 
 # =========================================================
-# GROUPING
+# GROUPING (PYT vs PYP)
 # =========================================================
 group_col = "team" if "PYT" in break_format else "player"
 
 summary = (
     df.groupby(group_col)
-      .agg(base_score=("score", "sum"), card_count=("score", "count"))
+      .agg(
+          base_score=("score", "sum"),
+          card_count=("score", "count")
+      )
       .reset_index()
 )
 
@@ -163,21 +167,20 @@ if "velocity_state" not in st.session_state:
 
 for _, row in summary.iterrows():
     name = row[group_col]
-    colA, colB, colC = st.columns([3, 2, 2])
+    c1, c2, c3 = st.columns([3, 2, 2])
+    c1.markdown(f"**{name}**")
 
-    colA.markdown(f"**{name}**")
-
-    st.session_state.momentum_state[name] = colB.selectbox(
+    st.session_state.momentum_state[name] = c2.selectbox(
         "Momentum",
         ["Neutral", "Hot", "Cold"],
-        index=["Neutral", "Hot", "Cold"].index(st.session_state.momentum_state[name]),
+        index=["Neutral","Hot","Cold"].index(st.session_state.momentum_state[name]),
         key=f"mom_{name}"
     )
 
-    st.session_state.velocity_state[name] = colC.selectbox(
+    st.session_state.velocity_state[name] = c3.selectbox(
         "Velocity",
         ["Normal", "Fast", "Slow"],
-        index=["Normal", "Fast", "Slow"].index(st.session_state.velocity_state[name]),
+        index=["Normal","Fast","Slow"].index(st.session_state.velocity_state[name]),
         key=f"vel_{name}"
     )
 
@@ -187,13 +190,13 @@ summary["Velocity"] = summary[group_col].map(st.session_state.velocity_state)
 summary["momentum_multiplier"] = summary["Momentum"].map(momentum_map)
 summary["velocity_multiplier"] = summary["Velocity"].map(velocity_map)
 
-# =========================================================
-# APPLY ALL MODIFIERS
-# =========================================================
 summary["market_multiplier"] = summary[group_col].apply(
     lambda x: market_multiplier(x) if break_format.startswith("PYT") else 1.0
 )
 
+# =========================================================
+# ADJUSTED SCORE
+# =========================================================
 summary["adjusted_score"] = (
     summary["base_score"] *
     summary["momentum_multiplier"] *
@@ -202,7 +205,7 @@ summary["adjusted_score"] = (
 )
 
 # =========================================================
-# BREAK PREMIUM
+# BREAK PREMIUM (SECONDARY + BRAND)
 # =========================================================
 avg_score = summary["base_score"].mean()
 
@@ -216,7 +219,7 @@ else:
 target_gmv = secondary_market + break_premium
 
 # =========================================================
-# DYNAMIC ANCHORS + TIERS
+# DYNAMIC ANCHORS + TIERS (PRODUCT-SPECIFIC)
 # =========================================================
 summary = summary.sort_values("adjusted_score", ascending=False).reset_index(drop=True)
 
@@ -226,7 +229,7 @@ summary.loc[3:7, "tier"] = "Strong"
 summary.loc[8:17, "tier"] = "Average"
 
 # =========================================================
-# PRICE BANDS
+# PRICE BANDS — MOMENTUM INSIDE TIER
 # =========================================================
 bands = {
     "Anchor": (180, 260),
@@ -235,17 +238,20 @@ bands = {
     "Weak": (40, 80),
 }
 
-def band_price(row):
-    lo, hi = bands[row["tier"]]
-    return lo + (hi - lo) * (
-        (row["adjusted_score"] - summary["adjusted_score"].min()) /
-        (summary["adjusted_score"].max() - summary["adjusted_score"].min() + 1e-6)
-    )
+score_min = summary["adjusted_score"].min()
+score_max = summary["adjusted_score"].max()
 
-summary["band_price"] = summary.apply(band_price, axis=1)
+def band_position(row):
+    lo, hi = bands[row["tier"]]
+    if score_max == score_min:
+        return (lo + hi) / 2
+    pct = (row["adjusted_score"] - score_min) / (score_max - score_min)
+    return lo + pct * (hi - lo)
+
+summary["band_price"] = summary.apply(band_position, axis=1)
 
 # =========================================================
-# NORMALIZE TO GMV
+# NORMALIZE TO TARGET GMV
 # =========================================================
 summary["weight"] = summary["band_price"] / summary["band_price"].sum()
 summary["suggested_price"] = (summary["weight"] * target_gmv).round(-1)
@@ -274,8 +280,8 @@ st.dataframe(
 
 st.subheader("Break Summary")
 
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("Checklist Strength", checklist_strength)
-c2.metric("Target GMV", f"${target_gmv:,.0f}")
-c3.metric("Net Profit", f"${profit:,.0f}", f"{profit_pct:.1f}%")
-c4.metric("Profit Quality", profit_quality)
+a, b, c, d = st.columns(4)
+a.metric("Checklist Strength", checklist_strength)
+b.metric("Target GMV", f"${target_gmv:,.0f}")
+c.metric("Net Profit", f"${profit:,.0f}", f"{profit_pct:.1f}%")
+d.metric("Profit Quality", profit_quality)
