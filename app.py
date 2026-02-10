@@ -11,54 +11,35 @@ st.set_page_config(
 )
 
 st.title("Break Pricing Engine")
-st.caption("Checklist-driven pricing with real break economics")
+st.caption("Checklist-driven pricing anchored to secondary market")
 
 # =========================================================
-# BREAK INPUTS
+# USER INPUTS (CLEAN + FINAL)
 # =========================================================
 st.subheader("Break Inputs")
 
-col1, col2, col3 = st.columns(3)
+col1, col2 = st.columns(2)
 
 break_format = col1.selectbox(
     "Break Format",
     ["PYT (Pick Your Team)", "PYP (Pick Your Player)"]
 )
 
-total_break_price = col2.number_input(
-    "Target Total Break Price ($)",
-    value=4500,
-    step=50
-)
-
-floor_price = col3.number_input(
-    "Floor Spot Price ($)",
-    value=35,
-    step=5
-)
-
-st.divider()
-
-# =========================================================
-# COST & FEES
-# =========================================================
-st.subheader("Cost & Fees")
-
-col4, col5, col6 = st.columns(3)
-
-purchase_cost = col4.number_input(
+purchase_cost = col2.number_input(
     "Your Purchase Cost ($)",
-    value=3200,
+    value=864,
     step=50
 )
 
-market_cost = col5.number_input(
-    "Secondary Market Reference ($)",
-    value=3500,
-    step=50
+col3, col4 = st.columns(2)
+
+secondary_market = col3.number_input(
+    "Secondary Market Reference (Dave & Adam’s)",
+    value=1665,
+    step=25
 )
 
-fanatics_fee_pct = col6.number_input(
+fanatics_fee_pct = col4.number_input(
     "Fanatics Fee (%)",
     value=10.0,
     step=0.5
@@ -67,7 +48,7 @@ fanatics_fee_pct = col6.number_input(
 st.divider()
 
 # =========================================================
-# TEAM DEFINITIONS
+# MLB TEAMS (MODERN)
 # =========================================================
 MLB_TEAMS = sorted([
     "Arizona Diamondbacks","Atlanta Braves","Baltimore Orioles","Boston Red Sox",
@@ -90,7 +71,7 @@ TEAM_MERGE_MAP = {
 }
 
 # =========================================================
-# UPLOAD CHECKLIST
+# UPLOAD BECKETT CHECKLIST
 # =========================================================
 st.subheader("Upload Beckett Checklist")
 
@@ -119,7 +100,7 @@ df["team"] = df["team"].replace(TEAM_MERGE_MAP)
 df = df[df["team"].isin(MLB_TEAMS)]
 
 # =========================================================
-# TAG SIGNALS
+# CHECKLIST SIGNAL TAGGING
 # =========================================================
 df["rookie"] = df["notes"].str.contains(r"\bRC\b", flags=re.I, regex=True)
 df["league_leaders"] = df["notes"].str.contains("league leaders", flags=re.I, regex=True)
@@ -127,7 +108,7 @@ df["combo"] = df["notes"].str.contains("combo", flags=re.I, regex=True)
 df["team_card"] = df["notes"].str.contains("team card", flags=re.I, regex=True)
 
 # =========================================================
-# SCORING
+# SCORING (UNCHANGED CORE LOGIC)
 # =========================================================
 def score_row(r):
     score = 1
@@ -153,19 +134,33 @@ summary = (
       .reset_index()
 )
 
-# =========================================================
-# PRICING LOGIC
-# =========================================================
-num_spots = len(summary)
-floor_total = num_spots * floor_price
-remaining_pool = total_break_price - floor_total
+total_score = summary["score"].sum()
+summary["weight"] = summary["score"] / total_score
 
-if remaining_pool <= 0:
-    st.error("Floor price too high for total break price.")
-    st.stop()
+# =========================================================
+# CHECKLIST STRENGTH → BREAK PREMIUM
+# =========================================================
+avg_score = summary["score"].mean()
 
-summary["weight"] = summary["score"] / summary["score"].sum()
-summary["suggested_price"] = floor_price + (summary["weight"] * remaining_pool)
+if avg_score >= summary["score"].quantile(0.75):
+    checklist_strength = "Strong"
+    break_premium = 500
+elif avg_score >= summary["score"].quantile(0.35):
+    checklist_strength = "Average"
+    break_premium = 300
+else:
+    checklist_strength = "Weak"
+    break_premium = 150
+
+# =========================================================
+# TARGET GMV (DERIVED, NOT INPUT)
+# =========================================================
+target_gmv = secondary_market + break_premium
+
+# =========================================================
+# PRICE DISTRIBUTION
+# =========================================================
+summary["suggested_price"] = summary["weight"] * target_gmv
 summary["suggested_price"] = summary["suggested_price"].round(-1)
 
 # =========================================================
@@ -173,26 +168,37 @@ summary["suggested_price"] = summary["suggested_price"].round(-1)
 # =========================================================
 gross_revenue = summary["suggested_price"].sum()
 fanatics_fees = gross_revenue * (fanatics_fee_pct / 100)
-net_revenue = gross_revenue - fanatics_fees
-profit = net_revenue - purchase_cost
-profit_pct = (profit / purchase_cost) * 100
+net_profit = gross_revenue - fanatics_fees - purchase_cost
+profit_pct = (net_profit / purchase_cost) * 100
+
+if net_profit >= 800:
+    profit_quality = "Strong"
+elif net_profit >= 400:
+    profit_quality = "Acceptable"
+else:
+    profit_quality = "Thin"
 
 # =========================================================
-# OUTPUT
+# DISPLAY
 # =========================================================
-st.subheader("Suggested Pricing")
+st.subheader("Pricing Output")
 
 summary["suggested_price"] = summary["suggested_price"].apply(lambda x: f"${int(x):,}")
 
 st.dataframe(
-    summary.sort_values("suggested_price", ascending=False),
+    summary.sort_values(
+        "suggested_price",
+        ascending=False,
+        key=lambda col: col.str.replace("$", "", regex=False).astype(int)
+    ),
     use_container_width=True
 )
 
-st.subheader("Break Economics")
+st.subheader("Break Summary")
 
-eco_col1, eco_col2, eco_col3 = st.columns(3)
+colA, colB, colC, colD = st.columns(4)
 
-eco_col1.metric("Gross Revenue", f"${gross_revenue:,.0f}")
-eco_col2.metric("Net Revenue (After Fees)", f"${net_revenue:,.0f}")
-eco_col3.metric("Profit", f"${profit:,.0f}", f"{profit_pct:.1f}%")
+colA.metric("Checklist Strength", checklist_strength)
+colB.metric("Target GMV", f"${target_gmv:,.0f}")
+colC.metric("Net Profit", f"${net_profit:,.0f}", f"{profit_pct:.1f}%")
+colD.metric("Profit Quality", profit_quality)
