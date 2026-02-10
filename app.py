@@ -63,7 +63,7 @@ def market_mult(team):
     return 1.00
 
 # =========================================================
-# TEAM MERGE MAP (LEGACY → MODERN)
+# TEAM MERGE MAP
 # =========================================================
 TEAM_MERGE = {
     "Montreal Expos": "Washington Nationals",
@@ -75,7 +75,7 @@ TEAM_MERGE = {
 }
 
 # =========================================================
-# UPLOAD BECKETT CHECKLIST
+# UPLOAD CHECKLIST
 # =========================================================
 st.subheader("Upload Beckett Checklist")
 file = st.file_uploader("Upload checklist (.xlsx)", type=["xlsx"])
@@ -90,7 +90,7 @@ df = df.dropna(subset=["player", "team"])
 df["team"] = df["team"].replace(TEAM_MERGE)
 
 # =========================================================
-# CHECKLIST SIGNALS
+# CHECKLIST SCORING
 # =========================================================
 df["rookie"] = df["notes"].str.contains(r"\bRC\b", flags=re.I, regex=True)
 df["league"] = df["notes"].str.contains("league leaders", flags=re.I, regex=True)
@@ -116,7 +116,7 @@ summary = (
 )
 
 # =========================================================
-# STATEFUL MOMENTUM & VELOCITY
+# MOMENTUM & VELOCITY
 # =========================================================
 st.subheader("Momentum & Velocity")
 
@@ -144,24 +144,15 @@ for _, row in summary.iterrows():
         key=f"vel_{name}"
     )
 
-summary["momentum_mult"] = summary[group_col].map(lambda x: mom_map[st.session_state.mom_state[x]])
-summary["velocity_mult"] = summary[group_col].map(lambda x: vel_map[st.session_state.vel_state[x]])
-summary["market_mult"] = summary[group_col].map(
-    lambda x: market_mult(x) if break_format.startswith("PYT") else 1.0
-)
-
-# =========================================================
-# ADJUSTED WEIGHT (LIVE REBALANCING)
-# =========================================================
 summary["adjusted_weight"] = (
     summary["base_score"]
-    * summary["momentum_mult"]
-    * summary["velocity_mult"]
-    * summary["market_mult"]
+    * summary[group_col].map(lambda x: mom_map[st.session_state.mom_state[x]])
+    * summary[group_col].map(lambda x: vel_map[st.session_state.vel_state[x]])
+    * summary[group_col].map(lambda x: market_mult(x) if break_format.startswith("PYT") else 1.0)
 )
 
 # =========================================================
-# TARGET GMV (SECONDARY + PREMIUM)
+# TARGET GMV
 # =========================================================
 avg = summary["base_score"].mean()
 premium = 500 if avg >= summary["base_score"].quantile(0.75) else \
@@ -178,18 +169,15 @@ summary["raw_price"] *= target_gmv / summary["raw_price"].sum()
 summary["suggested_price"] = summary["raw_price"].round(-1).astype(int)
 
 # =========================================================
-# ECONOMICS
-# =========================================================
-gross = summary["suggested_price"].sum()
-fees = gross * fanatics_fee_pct / 100
-profit = gross - fees - purchase_cost
-
-# =========================================================
-# PRICING OUTPUT
+# SUMMARY OUTPUT
 # =========================================================
 st.subheader("Pricing Output")
 summary["Price"] = summary["suggested_price"].apply(lambda x: f"${x:,}")
 st.dataframe(summary[[group_col, "card_count", "Price"]], use_container_width=True)
+
+gross = summary["suggested_price"].sum()
+fees = gross * fanatics_fee_pct / 100
+profit = gross - fees - purchase_cost
 
 st.subheader("Break Summary")
 a, b, c = st.columns(3)
@@ -198,9 +186,10 @@ b.metric("Net Profit", f"${profit:,.0f}")
 c.metric("Fees", f"${fees:,.0f}")
 
 # =========================================================
-# FANATICS-STYLE PRICING METHODOLOGY PANEL
+# FANATICS-STYLE PRICING PANEL (FIXED)
 # =========================================================
 st.divider()
+
 st.markdown("""
 <style>
 .pricing-card {
@@ -238,49 +227,49 @@ st.markdown("""
 </style>
 
 <div class="pricing-card">
-    <h3>How Pricing Is Calculated</h3>
+  <h3>How Pricing Is Calculated</h3>
 
-    <div class="pricing-row">
-        <div class="pricing-label">Market Anchor</div>
-        <div class="pricing-desc">
-            Pricing begins from the secondary market reference, representing the sealed wax alternative.
-        </div>
+  <div class="pricing-row">
+    <div class="pricing-label">Market Anchor</div>
+    <div class="pricing-desc">
+      Pricing begins from the secondary market reference, representing the sealed wax alternative.
     </div>
+  </div>
 
-    <div class="pricing-row">
-        <div class="pricing-label">Break Premium</div>
-        <div class="pricing-desc">
-            A premium is applied based on overall checklist quality to reflect live break demand.
-        </div>
+  <div class="pricing-row">
+    <div class="pricing-label">Break Premium</div>
+    <div class="pricing-desc">
+      A premium is applied based on overall checklist quality to reflect live break demand.
     </div>
+  </div>
 
-    <div class="pricing-row">
-        <div class="pricing-label">Checklist Scoring</div>
-        <div class="pricing-desc">
-            Teams are weighted using checklist depth signals including base cards,
-            rookies, combo cards, and league leader cards.
-        </div>
+  <div class="pricing-row">
+    <div class="pricing-label">Checklist Scoring</div>
+    <div class="pricing-desc">
+      Teams are weighted using checklist depth signals including base cards,
+      rookies, combo cards, and league leader cards.
     </div>
+  </div>
 
-    <div class="pricing-row">
-        <div class="pricing-label">Behavioral Adjustments</div>
-        <div class="pricing-desc">
-            Optional modifiers account for long-term market popularity,
-            short-term momentum (news/hype),
-            and sell-through velocity.
-        </div>
+  <div class="pricing-row">
+    <div class="pricing-label">Behavioral Adjustments</div>
+    <div class="pricing-desc">
+      Optional modifiers account for long-term market popularity,
+      short-term momentum (news and hype),
+      and sell-through velocity.
     </div>
+  </div>
 
-    <div class="pricing-row">
-        <div class="pricing-label">GMV Normalization</div>
-        <div class="pricing-desc">
-            All spot prices are normalized so total GMV remains accurate.
-            Adjustments redistribute value rather than create it.
-        </div>
+  <div class="pricing-row">
+    <div class="pricing-label">GMV Normalization</div>
+    <div class="pricing-desc">
+      All spot prices are normalized so total GMV remains accurate.
+      Adjustments redistribute value rather than create it.
     </div>
+  </div>
 
-    <div class="pricing-footer">
-        Prices are generated for internal decision-making and reflect real-world PYT pricing behavior.
-    </div>
+  <div class="pricing-footer">
+    Prices are generated for internal decision-making and mirror real-world PYT pricing behavior.
+  </div>
 </div>
 """, unsafe_allow_html=True)
