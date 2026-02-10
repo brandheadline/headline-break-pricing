@@ -6,12 +6,12 @@ import re
 # APP CONFIG
 # =========================================================
 st.set_page_config(
-    page_title="PYT Break Pricing Engine",
+    page_title="Beckett PYT Pricing Engine",
     layout="centered"
 )
 
-st.title("PYT Break Pricing Engine")
-st.caption("Fanatics-style pricing framework for breakers")
+st.title("Beckett PYT Pricing Engine")
+st.caption("Uses Beckett checklist team data directly (no roster file needed)")
 
 # =========================================================
 # BREAK INPUTS
@@ -26,7 +26,7 @@ total_break_price = col1.number_input(
     step=50
 )
 
-min_team_price = col2.number_input(
+floor_price = col2.number_input(
     "Floor Team Price ($)",
     value=35,
     step=5
@@ -35,100 +35,84 @@ min_team_price = col2.number_input(
 st.divider()
 
 # =========================================================
-# UPLOAD CHECKLIST
+# UPLOAD BECKETT CHECKLIST
 # =========================================================
-st.subheader("Checklist Upload (Beckett Excel)")
+st.subheader("Upload Beckett Checklist (Excel)")
 
-checklist_file = st.file_uploader(
+file = st.file_uploader(
     "Upload checklist (.xlsx)",
     type=["xlsx"]
 )
 
-if not checklist_file:
+if not file:
     st.stop()
 
-# Read raw, no header assumptions
-raw = pd.read_excel(checklist_file, header=None)
-
-# Flatten rows into text blobs
-rows = raw.astype(str).apply(lambda r: " ".join(r.values), axis=1)
-df = pd.DataFrame({"text": rows})
-
-# =========================================================
-# SIGNAL TAGGING (HOBBY HEURISTICS)
-# =========================================================
-def has(pattern):
-    return df["text"].str.contains(pattern, flags=re.I, regex=True)
-
-df["rookie"] = has(r"\bRC\b|rookie")
-df["auto"] = has(r"auto|autograph")
-df["patch"] = has(r"patch|relic|memorabilia")
-df["dual"] = has(r"dual|combo")
-df["legend"] = has(r"hall of fame|hof|legend")
-
-df["rpa"] = df["rookie"] & df["auto"] & df["patch"]
+# Read Full Checklist sheet explicitly
+try:
+    df = pd.read_excel(file, sheet_name="Full Checklist")
+except Exception:
+    st.error("Could not find 'Full Checklist' sheet in the file.")
+    st.stop()
 
 # =========================================================
-# PLAYER EXTRACTION (GOOD-ENOUGH, INDUSTRY STANDARD)
+# NORMALIZE COLUMNS
 # =========================================================
-def extract_player(text):
-    m = re.findall(r"[A-Z][a-z]+ [A-Z][a-z]+", text)
-    return m[0] if m else None
+df.columns = [str(c).strip().lower() for c in df.columns]
 
-df["player"] = df["text"].apply(extract_player)
-df = df.dropna(subset=["player"])
+# Expected structure from Beckett
+# player column usually unnamed or first text column
+player_col = df.columns[1]
+team_col = df.columns[2]
+notes_col = df.columns[3]
+
+df = df[[player_col, team_col, notes_col]]
+df.columns = ["player", "team", "notes"]
+
+df["player"] = df["player"].astype(str).str.strip()
+df["team"] = df["team"].astype(str).str.strip()
+df["notes"] = df["notes"].astype(str).str.strip()
 
 # =========================================================
-# PLAYER CHASE SCORING (OPINIONATED & SIMPLE)
+# FILTER INVALID ROWS
 # =========================================================
-def chase_score(row):
-    score = 0
-    if row["rpa"]:
-        score += 10
-    elif row["rookie"] and row["auto"]:
-        score += 7
-    elif row["auto"]:
-        score += 4
+df = df[
+    (df["player"] != "") &
+    (~df["player"].str.contains("nan", case=False)) &
+    (df["team"] != "")
+]
 
-    if row["dual"]:
+# =========================================================
+# TAG HOBBY SIGNALS
+# =========================================================
+df["rookie"] = df["notes"].str.contains(r"\bRC\b", flags=re.I, regex=True)
+df["team_card"] = df["notes"].str.contains("team card", flags=re.I, regex=True)
+df["league_leaders"] = df["notes"].str.contains("league leaders", flags=re.I, regex=True)
+df["combo"] = df["notes"].str.contains("combo", flags=re.I, regex=True)
+
+# =========================================================
+# CHASE SCORING (FANATICS-STYLE)
+# =========================================================
+def score_row(r):
+    score = 1  # base presence
+
+    if r["rookie"]:
         score += 3
-    if row["legend"]:
+
+    if r["league_leaders"]:
         score += 2
+
+    if r["combo"]:
+        score += 2
+
+    if r["team_card"]:
+        score += 1
 
     return score
 
-df["score"] = df.apply(chase_score, axis=1)
+df["score"] = df.apply(score_row, axis=1)
 
 # =========================================================
-# UPLOAD PLAYER → TEAM MAP
-# =========================================================
-st.subheader("Player → Team Mapping")
-
-team_file = st.file_uploader(
-    "Upload player-team mapping (.csv)",
-    type=["csv"],
-    help="CSV must contain columns: player, team"
-)
-
-if not team_file:
-    st.stop()
-
-team_map = pd.read_csv(team_file)
-team_map.columns = [c.lower().strip() for c in team_map.columns]
-
-if "player" not in team_map.columns or "team" not in team_map.columns:
-    st.error("CSV must contain 'player' and 'team' columns.")
-    st.stop()
-
-team_map["player"] = team_map["player"].astype(str).str.strip()
-team_map["team"] = team_map["team"].astype(str).str.strip()
-
-# Merge
-df = df.merge(team_map, on="player", how="left")
-df = df.dropna(subset=["team"])
-
-# =========================================================
-# TEAM AGGREGATION
+# AGGREGATE BY TEAM
 # =========================================================
 team_scores = (
     df.groupby("team")["score"]
@@ -138,56 +122,35 @@ team_scores = (
 
 total_score = team_scores.sum()
 
-pricing = (
-    team_scores
-    .reset_index()
-    .rename(columns={"score": "team_score"})
-)
+pricing = team_scores.reset_index()
+pricing.columns = ["team", "team_score"]
 
 pricing["weight_pct"] = pricing["team_score"] / total_score
 pricing["raw_price"] = pricing["weight_pct"] * total_break_price
 
 # =========================================================
-# HOBBY ROUNDING & FLOORS
+# ROUNDING & FLOORS
 # =========================================================
 pricing["suggested_price"] = (
     pricing["raw_price"]
-    .round(-1)               # round to nearest $10
-    .clip(lower=min_team_price)
+    .round(-1)
+    .clip(lower=floor_price)
 )
 
-# Normalize back to total (minor correction)
-price_diff = total_break_price - pricing["suggested_price"].sum()
-if abs(price_diff) >= 10:
-    pricing.loc[0, "suggested_price"] += price_diff
+# Normalize back to total
+diff = total_break_price - pricing["suggested_price"].sum()
+if abs(diff) >= 10:
+    pricing.loc[0, "suggested_price"] += diff
 
 # =========================================================
 # OUTPUT
 # =========================================================
-st.subheader("Suggested PYT Pricing (Copy This)")
+st.subheader("Suggested PYT Pricing (Beckett-Based)")
 
 st.dataframe(
-    pricing[[
-        "team",
-        "team_score",
-        "weight_pct",
-        "suggested_price"
-    ]].sort_values("suggested_price", ascending=False),
+    pricing.sort_values("suggested_price", ascending=False),
     use_container_width=True
 )
 
-st.success("Pricing generated. Use as a sanity check or direct copy for Fanatics PYT.")
+st.success("Pricing generated using Beckett team assignments. Copy directly into Fanatics.")
 
-# =========================================================
-# OPTIONAL INSIGHT
-# =========================================================
-with st.expander("Why teams are priced this way"):
-    st.markdown("""
-This pricing reflects **relative chase weight**, not exact EV.
-
-• Teams with elite rookie autos, RPAs, or duals float to the top  
-• Mid teams price to move  
-• Floor teams stabilize the room  
-
-This mirrors how experienced breakers price quickly and consistently.
-""")
