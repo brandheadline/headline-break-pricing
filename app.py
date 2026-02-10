@@ -7,6 +7,19 @@ import numpy as np
 # APP CONFIG
 # =========================================================
 st.set_page_config(page_title="Break Pricing Engine", layout="centered")
+
+# --- Toggle color override (GREEN = ON) ---
+st.markdown("""
+<style>
+div[data-testid="stToggle"] label {
+    font-weight: 600;
+}
+div[data-testid="stToggle"] input:checked + div {
+    background-color: #22c55e !important; /* green */
+}
+</style>
+""", unsafe_allow_html=True)
+
 st.title("Break Pricing Engine")
 st.caption("Checklist + Market + Anchors + Momentum + Velocity")
 
@@ -45,14 +58,14 @@ fanatics_fee_pct = c4.number_input(
 st.divider()
 
 # =========================================================
-# MARKET POPULARITY TOGGLE (NEW)
+# MARKET POPULARITY TOGGLE
 # =========================================================
 st.subheader("Market Popularity Adjustment")
 
 apply_market_popularity = st.toggle(
     "Apply Market Popularity (recommended)",
     value=True,
-    help="Applies long-term liquidity bias for large vs small market teams"
+    help="Applies long-term hobby liquidity bias for large vs small market teams"
 )
 
 # =========================================================
@@ -234,27 +247,17 @@ st.divider()
 st.subheader("How These Prices Are Calculated")
 
 st.markdown("""
-**This engine mirrors real-world PYT pricing behavior.**
+**This pricing engine mirrors real-world PYT behavior.**
 
-1. **Market Anchor**  
-   We start from the secondary market price (e.g. Dave & Adam’s).
+• Anchors to secondary market pricing  
+• Applies a break premium based on checklist quality  
+• Scores checklist depth (base, rookies, combos, league leaders)  
+• Applies behavioral adjustments:
+  – Market popularity (toggleable)
+  – Momentum (news/hype)
+  – Velocity (sell-through speed)
 
-2. **Break Premium**  
-   Based on overall checklist strength, a premium is added to reflect the value of breaking live.
+These adjustments **do not create value — they redistribute it**.
 
-3. **Checklist Weighting**  
-   Cards are scored using Beckett signals (base, rookies, combos, league leaders).
-
-4. **Behavioral Adjustments**  
-   - Market popularity (optional toggle)  
-   - Momentum (news, hype)  
-   - Velocity (sell-through speed)
-
-   These **do not create value** — they redistribute it.
-
-5. **GMV Normalization**  
-   All spots are rebalanced so the total equals the Target GMV.
-
-6. **Profit Check**  
-   Platform fees and purchase cost are applied to show real profitability.
+All prices are normalized to ensure total GMV remains accurate and profit is transparent.
 """)
