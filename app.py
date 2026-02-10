@@ -11,10 +11,10 @@ st.set_page_config(
 )
 
 st.title("Break Pricing Engine")
-st.caption("Checklist-driven pricing anchored to secondary market")
+st.caption("Checklist + Market + Momentum pricing engine")
 
 # =========================================================
-# USER INPUTS (CLEAN + FINAL)
+# USER INPUTS
 # =========================================================
 st.subheader("Break Inputs")
 
@@ -108,7 +108,7 @@ df["combo"] = df["notes"].str.contains("combo", flags=re.I, regex=True)
 df["team_card"] = df["notes"].str.contains("team card", flags=re.I, regex=True)
 
 # =========================================================
-# SCORING (UNCHANGED CORE LOGIC)
+# BASE SCORING (UNCHANGED CORE)
 # =========================================================
 def score_row(r):
     score = 1
@@ -121,31 +121,55 @@ def score_row(r):
 df["score"] = df.apply(score_row, axis=1)
 
 # =========================================================
-# GROUPING (PYT vs PYP)
+# GROUPING
 # =========================================================
 group_col = "team" if "PYT" in break_format else "player"
 
 summary = (
     df.groupby(group_col)
       .agg(
-          score=("score", "sum"),
-          count=("score", "count")
+          base_score=("score", "sum"),
+          card_count=("score", "count")
       )
       .reset_index()
 )
 
-total_score = summary["score"].sum()
-summary["weight"] = summary["score"] / total_score
+# =========================================================
+# MOMENTUM LAYER (PHASE 1)
+# =========================================================
+st.subheader("Momentum / News Signal")
+
+momentum_options = {
+    "Hot": 1.10,
+    "Neutral": 1.00,
+    "Cold": 0.90
+}
+
+summary["Momentum"] = "Neutral"
+
+with st.expander("Adjust Momentum (Optional)"):
+    for i in summary.index:
+        summary.at[i, "Momentum"] = st.selectbox(
+            f"{summary.at[i, group_col]}",
+            ["Neutral", "Hot", "Cold"],
+            index=0,
+            key=f"momentum_{i}"
+        )
+
+summary["momentum_multiplier"] = summary["Momentum"].map(momentum_options)
+
+# Apply momentum
+summary["adjusted_score"] = summary["base_score"] * summary["momentum_multiplier"]
 
 # =========================================================
 # CHECKLIST STRENGTH → BREAK PREMIUM
 # =========================================================
-avg_score = summary["score"].mean()
+avg_score = summary["base_score"].mean()
 
-if avg_score >= summary["score"].quantile(0.75):
+if avg_score >= summary["base_score"].quantile(0.75):
     checklist_strength = "Strong"
     break_premium = 500
-elif avg_score >= summary["score"].quantile(0.35):
+elif avg_score >= summary["base_score"].quantile(0.35):
     checklist_strength = "Average"
     break_premium = 300
 else:
@@ -153,13 +177,14 @@ else:
     break_premium = 150
 
 # =========================================================
-# TARGET GMV (DERIVED, NOT INPUT)
+# TARGET GMV
 # =========================================================
 target_gmv = secondary_market + break_premium
 
 # =========================================================
-# PRICE DISTRIBUTION
+# PRICE DISTRIBUTION (RE-NORMALIZED)
 # =========================================================
+summary["weight"] = summary["adjusted_score"] / summary["adjusted_score"].sum()
 summary["suggested_price"] = summary["weight"] * target_gmv
 summary["suggested_price"] = summary["suggested_price"].round(-1)
 
