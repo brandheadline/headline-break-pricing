@@ -8,7 +8,7 @@ import numpy as np
 # =========================================================
 st.set_page_config(page_title="Break Pricing Engine", layout="centered")
 st.title("Break Pricing Engine")
-st.caption("Checklist + Market + Momentum + Popularity")
+st.caption("Checklist + Market + Momentum + Popularity + Velocity")
 
 # =========================================================
 # USER INPUTS
@@ -45,20 +45,20 @@ fanatics_fee_pct = col4.number_input(
 st.divider()
 
 # =========================================================
-# MARKET POPULARITY (HARD-CODED)
+# MARKET POPULARITY (STABLE)
 # =========================================================
 LARGE_MARKET_TEAMS = {
-    "New York Yankees", "New York Mets",
-    "Los Angeles Dodgers", "Los Angeles Angels",
-    "Boston Red Sox", "Chicago Cubs",
-    "San Francisco Giants", "Philadelphia Phillies"
+    "New York Yankees","New York Mets",
+    "Los Angeles Dodgers","Los Angeles Angels",
+    "Boston Red Sox","Chicago Cubs",
+    "San Francisco Giants","Philadelphia Phillies"
 }
 
 SMALL_MARKET_TEAMS = {
-    "Miami Marlins", "Oakland Athletics",
-    "Kansas City Royals", "Pittsburgh Pirates",
-    "Cleveland Guardians", "Colorado Rockies",
-    "Milwaukee Brewers", "Tampa Bay Rays"
+    "Miami Marlins","Oakland Athletics",
+    "Kansas City Royals","Pittsburgh Pirates",
+    "Cleveland Guardians","Colorado Rockies",
+    "Milwaukee Brewers","Tampa Bay Rays"
 }
 
 def market_multiplier(team):
@@ -92,7 +92,7 @@ TEAM_MERGE_MAP = {
 }
 
 # =========================================================
-# UPLOAD CHECKLIST
+# UPLOAD BECKETT CHECKLIST
 # =========================================================
 st.subheader("Upload Beckett Checklist")
 
@@ -146,12 +146,12 @@ summary = (
 # =========================================================
 # MOMENTUM (UNCHANGED)
 # =========================================================
-st.subheader("Momentum / News Signal")
+st.subheader("Momentum / News")
 
 momentum_map = {"Hot": 1.10, "Neutral": 1.00, "Cold": 0.90}
 summary["Momentum"] = "Neutral"
 
-with st.expander("Adjust Momentum (Optional)"):
+with st.expander("Momentum Override"):
     for i in summary.index:
         summary.at[i, "Momentum"] = st.selectbox(
             summary.at[i, group_col],
@@ -163,7 +163,26 @@ with st.expander("Adjust Momentum (Optional)"):
 summary["momentum_multiplier"] = summary["Momentum"].map(momentum_map)
 
 # =========================================================
-# APPLY POPULARITY + MOMENTUM
+# VELOCITY (BREAKNINJA-LIKE)
+# =========================================================
+st.subheader("Market Velocity (BreakNinja-style)")
+
+velocity_map = {"Fast": 1.05, "Normal": 1.00, "Slow": 0.95}
+summary["Velocity"] = "Normal"
+
+with st.expander("Velocity Override"):
+    for i in summary.index:
+        summary.at[i, "Velocity"] = st.selectbox(
+            summary.at[i, group_col],
+            ["Fast", "Normal", "Slow"],
+            index=1,
+            key=f"vel_{i}"
+        )
+
+summary["velocity_multiplier"] = summary["Velocity"].map(velocity_map)
+
+# =========================================================
+# APPLY ALL MODIFIERS
 # =========================================================
 summary["market_multiplier"] = summary[group_col].apply(
     lambda x: market_multiplier(x) if break_format.startswith("PYT") else 1.0
@@ -172,6 +191,7 @@ summary["market_multiplier"] = summary[group_col].apply(
 summary["adjusted_score"] = (
     summary["base_score"] *
     summary["momentum_multiplier"] *
+    summary["velocity_multiplier"] *
     summary["market_multiplier"]
 )
 
@@ -242,7 +262,7 @@ st.subheader("Pricing Output")
 summary["suggested_price"] = summary["suggested_price"].apply(lambda x: f"${int(x):,}")
 
 st.dataframe(
-    summary[[group_col, "tier", "Momentum", "card_count", "suggested_price"]],
+    summary[[group_col, "tier", "Momentum", "Velocity", "card_count", "suggested_price"]],
     use_container_width=True
 )
 
@@ -253,4 +273,3 @@ c1.metric("Checklist Strength", checklist_strength)
 c2.metric("Target GMV", f"${target_gmv:,.0f}")
 c3.metric("Net Profit", f"${profit:,.0f}", f"{profit_pct:.1f}%")
 c4.metric("Profit Quality", profit_quality)
-
