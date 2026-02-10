@@ -5,7 +5,7 @@ import pandas as pd
 # APP CONFIG
 # =========================================================
 st.set_page_config(
-    page_title="Headline Break Pricing",
+    page_title="Headline Break Pricing Tool",
     layout="centered"
 )
 
@@ -39,29 +39,32 @@ if uploaded_file is None:
     st.stop()
 
 # =========================================================
-# LOAD EXCEL SAFELY
+# LOAD EXCEL
 # =========================================================
 try:
     raw_df = pd.read_excel(uploaded_file)
 except Exception as e:
-    st.error("Failed to read the uploaded Excel file.")
+    st.error("Failed to read Excel file.")
     st.exception(e)
     st.stop()
 
 if raw_df.empty:
-    st.error("The uploaded file contains no data.")
+    st.error("Uploaded file contains no data.")
     st.stop()
 
 # =========================================================
-# NORMALIZE COLUMN HEADERS (CRITICAL FIX)
+# NORMALIZE HEADERS (CRITICAL)
 # =========================================================
 raw_df.columns = [
     str(col).strip().lower() if col is not None else ""
     for col in raw_df.columns
 ]
 
+st.caption("Detected columns:")
+st.write(list(raw_df.columns))
+
 # =========================================================
-# COLUMN DETECTION
+# COLUMN DETECTION (BECKETT-AWARE)
 # =========================================================
 def find_column(keywords):
     for col in raw_df.columns:
@@ -70,72 +73,89 @@ def find_column(keywords):
                 return col
     return None
 
-team_col = find_column(["team"])
 player_col = find_column(["player", "name"])
-card_col = find_column(["card", "description", "card name"])
+card_number_col = find_column(["card #", "card#", "#"])
+set_col = find_column(["set"])
+notes_col = find_column(["note", "variation", "parallel"])
 
 # =========================================================
-# VALIDATION
+# VALIDATION (ONLY REQUIRE WHAT EXISTS IN BECKETT)
 # =========================================================
-missing_columns = []
-
-if team_col is None:
-    missing_columns.append("Team")
 if player_col is None:
-    missing_columns.append("Player")
-if card_col is None:
-    missing_columns.append("Card Description")
-
-if missing_columns:
     st.error(
-        "Missing required columns in checklist:\n\n"
-        + "\n".join(f"- {c}" for c in missing_columns)
-        + "\n\nPlease verify the Beckett checklist format."
+        "Missing required column: Player\n\n"
+        "Beckett checklists must contain a Player column."
     )
     st.stop()
 
 # =========================================================
-# CLEAN & STANDARDIZE DATA
+# BUILD CLEAN DATAFRAME
 # =========================================================
-df = raw_df[[team_col, player_col, card_col]].copy()
+df = pd.DataFrame()
+df["player"] = raw_df[player_col].astype(str).str.strip()
 
-df.rename(
-    columns={
-        team_col: "team",
-        player_col: "player",
-        card_col: "card"
-    },
-    inplace=True
+# Optional columns
+df["card_number"] = (
+    raw_df[card_number_col].astype(str).str.strip()
+    if card_number_col else ""
 )
 
-# Drop rows that are fully empty
-df = df.dropna(how="all")
+df["set"] = (
+    raw_df[set_col].astype(str).str.strip()
+    if set_col else ""
+)
 
-# Drop rows without a team value
-df = df[df["team"].astype(str).str.strip() != ""]
+df["notes"] = (
+    raw_df[notes_col].astype(str).str.strip()
+    if notes_col else ""
+)
 
-# Reset index
+# =========================================================
+# CONSTRUCT CARD DESCRIPTION (CANONICAL)
+# =========================================================
+def build_card_description(row):
+    parts = []
+    if row["set"]:
+        parts.append(row["set"])
+    if row["card_number"]:
+        parts.append(f"#{row['card_number']}")
+    if row["notes"]:
+        parts.append(row["notes"])
+    return " – ".join(parts)
+
+df["card"] = df.apply(build_card_description, axis=1)
+
+# Placeholder for team (mapped later)
+df["team"] = ""
+
+# =========================================================
+# CLEAN ROWS
+# =========================================================
+df = df[df["player"] != ""]
 df.reset_index(drop=True, inplace=True)
 
 # =========================================================
 # SUCCESS STATE
 # =========================================================
-st.success("Checklist uploaded and parsed successfully.")
+st.success("Checklist successfully ingested.")
 
 st.subheader("Parsed Checklist Preview")
-st.dataframe(df.head(50), use_container_width=True)
+st.dataframe(
+    df[["player", "card"]].head(50),
+    use_container_width=True
+)
 
 st.caption(
     f"Rows loaded: {len(df)} | "
-    f"Teams detected: {df['team'].nunique()} | "
+    f"Unique players: {df['player'].nunique()} | "
     f"Sport: {sport}"
 )
 
 # =========================================================
-# END OF CURRENT FUNCTIONALITY
+# END OF CURRENT SCOPE
 # =========================================================
 st.divider()
 st.info(
     "Checklist ingestion complete.\n\n"
-    "This is the stable foundation. Pricing logic will be layered next."
+    "Team assignment and pricing logic will be layered next."
 )
