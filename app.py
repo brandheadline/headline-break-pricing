@@ -45,7 +45,7 @@ fanatics_fee_pct = col4.number_input(
 st.divider()
 
 # =========================================================
-# MARKET POPULARITY (STABLE, HARD-CODED)
+# MARKET POPULARITY
 # =========================================================
 LARGE_MARKET_TEAMS = {
     "New York Yankees","New York Mets",
@@ -151,7 +151,6 @@ st.subheader("Momentum & Market Velocity")
 momentum_map = {"Hot": 1.10, "Neutral": 1.00, "Cold": 0.90}
 velocity_map = {"Fast": 1.05, "Normal": 1.00, "Slow": 0.95}
 
-# Initialize state ONCE
 if "momentum_state" not in st.session_state:
     st.session_state.momentum_state = {
         row[group_col]: "Neutral" for _, row in summary.iterrows()
@@ -162,10 +161,8 @@ if "velocity_state" not in st.session_state:
         row[group_col]: "Normal" for _, row in summary.iterrows()
     }
 
-# Render controls (always visible)
 for _, row in summary.iterrows():
     name = row[group_col]
-
     colA, colB, colC = st.columns([3, 2, 2])
 
     colA.markdown(f"**{name}**")
@@ -173,28 +170,22 @@ for _, row in summary.iterrows():
     st.session_state.momentum_state[name] = colB.selectbox(
         "Momentum",
         ["Neutral", "Hot", "Cold"],
-        index=["Neutral", "Hot", "Cold"].index(
-            st.session_state.momentum_state[name]
-        ),
+        index=["Neutral", "Hot", "Cold"].index(st.session_state.momentum_state[name]),
         key=f"mom_{name}"
     )
 
     st.session_state.velocity_state[name] = colC.selectbox(
         "Velocity",
         ["Normal", "Fast", "Slow"],
-        index=["Normal", "Fast", "Slow"].index(
-            st.session_state.velocity_state[name]
-        ),
+        index=["Normal", "Fast", "Slow"].index(st.session_state.velocity_state[name]),
         key=f"vel_{name}"
     )
 
-summary["momentum_multiplier"] = summary[group_col].map(
-    lambda x: momentum_map[st.session_state.momentum_state[x]]
-)
+summary["Momentum"] = summary[group_col].map(st.session_state.momentum_state)
+summary["Velocity"] = summary[group_col].map(st.session_state.velocity_state)
 
-summary["velocity_multiplier"] = summary[group_col].map(
-    lambda x: velocity_map[st.session_state.velocity_state[x]]
-)
+summary["momentum_multiplier"] = summary["Momentum"].map(momentum_map)
+summary["velocity_multiplier"] = summary["Velocity"].map(velocity_map)
 
 # =========================================================
 # APPLY ALL MODIFIERS
@@ -288,4 +279,3 @@ c1.metric("Checklist Strength", checklist_strength)
 c2.metric("Target GMV", f"${target_gmv:,.0f}")
 c3.metric("Net Profit", f"${profit:,.0f}", f"{profit_pct:.1f}%")
 c4.metric("Profit Quality", profit_quality)
-
