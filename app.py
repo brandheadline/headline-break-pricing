@@ -8,7 +8,7 @@ import numpy as np
 # =========================================================
 st.set_page_config(page_title="Break Pricing Engine", layout="centered")
 st.title("Break Pricing Engine")
-st.caption("Real-time PYT pricing with dynamic rebalancing")
+st.caption("Checklist + Market + Anchors + Momentum + Velocity")
 
 # =========================================================
 # USER INPUTS
@@ -67,7 +67,7 @@ def market_mult(team):
     return 1.00
 
 # =========================================================
-# MLB TEAMS + MERGE
+# TEAM MERGE MAP
 # =========================================================
 TEAM_MERGE = {
     "Montreal Expos": "Washington Nationals",
@@ -113,7 +113,7 @@ def score(r):
 df["score"] = df.apply(score, axis=1)
 
 # =========================================================
-# GROUP
+# GROUPING
 # =========================================================
 group_col = "team" if "PYT" in break_format else "player"
 
@@ -126,7 +126,7 @@ summary = (
 # =========================================================
 # STATEFUL MOMENTUM & VELOCITY
 # =========================================================
-st.subheader("Momentum & Velocity (Live Rebalancing)")
+st.subheader("Momentum & Velocity")
 
 mom_map = {"Hot": 1.20, "Neutral": 1.00, "Cold": 0.85}
 vel_map = {"Fast": 1.15, "Normal": 1.00, "Slow": 0.85}
@@ -159,7 +159,7 @@ summary["velocity_mult"] = summary[group_col].map(lambda x: vel_map[st.session_s
 summary["market_mult"] = summary[group_col].map(lambda x: market_mult(x) if break_format.startswith("PYT") else 1.0)
 
 # =========================================================
-# ADJUSTED WEIGHT (THIS IS THE FIX)
+# ADJUSTED WEIGHT
 # =========================================================
 summary["adjusted_weight"] = (
     summary["base_score"]
@@ -176,19 +176,14 @@ premium = 500 if avg >= summary["base_score"].quantile(0.75) else 300 if avg >= 
 target_gmv = secondary_market + premium
 
 # =========================================================
-# FINAL PRICE DISTRIBUTION (VISIBLE MOVEMENT)
+# PRICE DISTRIBUTION
 # =========================================================
 summary["weight"] = summary["adjusted_weight"] / summary["adjusted_weight"].sum()
 summary["raw_price"] = summary["weight"] * target_gmv
+summary["raw_price"] = summary["raw_price"].clip(lower=40)
+summary["raw_price"] *= target_gmv / summary["raw_price"].sum()
 
-# Soft floors (no $10 nonsense)
-summary["suggested_price"] = summary["raw_price"].clip(lower=40)
-
-# Normalize again after floor
-summary["suggested_price"] = summary["suggested_price"] * (target_gmv / summary["suggested_price"].sum())
-
-# Round ONLY for display
-summary["suggested_price_display"] = summary["suggested_price"].round(-1).astype(int)
+summary["suggested_price"] = summary["raw_price"].round(-1).astype(int)
 
 # =========================================================
 # ECONOMICS
@@ -202,7 +197,7 @@ profit = gross - fees - purchase_cost
 # =========================================================
 st.subheader("Pricing Output")
 
-summary["Price"] = summary["suggested_price_display"].apply(lambda x: f"${x:,}")
+summary["Price"] = summary["suggested_price"].apply(lambda x: f"${x:,}")
 
 st.dataframe(
     summary[[group_col, "card_count", "Price"]],
@@ -215,3 +210,72 @@ a.metric("Target GMV", f"${target_gmv:,.0f}")
 b.metric("Net Profit", f"${profit:,.0f}")
 c.metric("Fees", f"${fees:,.0f}")
 
+# =========================================================
+# EXPLANATION SECTION (NEW – SAFE ADDITION)
+# =========================================================
+st.divider()
+st.subheader("How These Prices Are Calculated")
+
+st.markdown("""
+This pricing engine is designed to mirror how experienced breakers price spots in real life.
+Below is a plain-English explanation of how the numbers are produced.
+
+---
+
+### 1. Market Anchor (Starting Point)
+We begin with the **secondary market price** (e.g. Dave & Adam’s).  
+This represents what a buyer could pay for sealed wax instead of joining a break.
+
+We then apply a **break premium** based on checklist quality:
+- Strong checklist → +$500  
+- Average checklist → +$300  
+- Weak checklist → +$150  
+
+This produces the **Target GMV** for the break.
+
+---
+
+### 2. Checklist Strength Scoring
+Each card in the Beckett checklist contributes signal:
+- Base card → +1  
+- Rookie card (RC) → +3  
+- League Leaders → +2  
+- Combo cards → +2  
+
+These signals are **summed by team or player** to determine relative strength.
+
+---
+
+### 3. Market & Behavioral Adjustments
+We then apply **small, conservative multipliers**:
+- **Market popularity** (large vs small market teams)
+- **Momentum** (news, hype, call-ups)
+- **Velocity** (how fast a spot typically sells)
+
+These do not create value — they **redistribute** it.
+
+---
+
+### 4. GMV Redistribution
+All adjusted weights are normalized so that:
+- The total of all spots equals the Target GMV
+- If one spot increases, others decrease slightly
+
+This is why changing one team automatically rebalances the room.
+
+---
+
+### 5. Profit Check
+Finally, we calculate:
+- Platform fees
+- Net profit
+- Margin visibility
+
+This allows the business to decide whether to run, adjust, or wait — without guessing.
+
+---
+
+**In short:**  
+This engine doesn’t invent prices.  
+It explains *why* prices look the way they do.
+""")
