@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 
 # =========================================================
 # APP CONFIG
@@ -29,111 +30,89 @@ st.divider()
 # =========================================================
 st.subheader("Checklist Upload (Strongly Recommended)")
 
-checklist_file = st.file_uploader(
+uploaded_file = st.file_uploader(
     "Upload Beckett Checklist (Excel)",
-    type=["xlsx"],
-    key="checklist"
+    type=["xlsx"]
 )
 
-if checklist_file is None:
+if uploaded_file is None:
     st.info("Please upload a Beckett checklist to continue.")
     st.stop()
 
 # =========================================================
-# LOAD CHECKLIST
+# LOAD RAW EXCEL (NO HEADER ASSUMPTIONS)
 # =========================================================
 try:
-    raw_df = pd.read_excel(checklist_file)
+    raw_df = pd.read_excel(uploaded_file, header=None)
 except Exception as e:
-    st.error("Failed to read checklist.")
+    st.error("Failed to read Excel file.")
     st.exception(e)
     st.stop()
 
-if raw_df.empty:
-    st.error("Checklist is empty.")
-    st.stop()
+st.caption("Raw shape:")
+st.write(raw_df.shape)
 
 # =========================================================
-# NORMALIZE HEADERS
+# IDENTIFY PRIMARY TEXT COLUMN (PLAYERS)
 # =========================================================
-raw_df.columns = [
-    str(col).strip().lower() if col is not None else ""
-    for col in raw_df.columns
+def text_ratio(col):
+    return col.astype(str).str.contains(r"[A-Za-z]", regex=True).mean()
+
+text_ratios = raw_df.apply(text_ratio)
+player_col_idx = text_ratios.idxmax()
+
+player_series = raw_df[player_col_idx].astype(str).str.strip()
+
+# =========================================================
+# IDENTIFY CARD NUMBER COLUMN (MOSTLY NUMERIC)
+# =========================================================
+def numeric_ratio(col):
+    return pd.to_numeric(col, errors="coerce").notna().mean()
+
+numeric_ratios = raw_df.apply(numeric_ratio)
+card_col_idx = numeric_ratios.idxmax()
+
+card_series = raw_df[card_col_idx]
+
+# =========================================================
+# BUILD DATAFRAME
+# =========================================================
+df = pd.DataFrame({
+    "player_raw": player_series,
+    "card_number": pd.to_numeric(card_series, errors="coerce")
+})
+
+# =========================================================
+# CLEAN PLAYERS
+# =========================================================
+df["player"] = (
+    df["player_raw"]
+    .str.replace(",", "", regex=False)
+    .str.strip()
+)
+
+# Remove garbage rows
+df = df[
+    (df["player"].notna()) &
+    (df["player"] != "") &
+    (~df["player"].str.lower().isin([
+        "base set", "nan"
+    ])) &
+    (~df["player"].str.contains("royals|yankees|dodgers|sox|mets", case=False))
 ]
 
-st.caption("Detected checklist columns:")
-st.write(list(raw_df.columns))
+df = df[df["card_number"].notna()]
 
-# =========================================================
-# COLUMN DETECTION (BECKETT-AWARE)
-# =========================================================
-def find_column(keywords):
-    for col in raw_df.columns:
-        for keyword in keywords:
-            if keyword in col:
-                return col
-    return None
-
-player_col = find_column(["player", "name"])
-card_number_col = find_column(["card #", "card#", "#"])
-set_col = find_column(["set"])
-notes_col = find_column(["note", "variation", "parallel"])
-
-if player_col is None:
-    st.error("Checklist must contain a Player column.")
-    st.stop()
-
-# =========================================================
-# BUILD BASE DATAFRAME
-# =========================================================
-df = pd.DataFrame()
-df["player"] = raw_df[player_col].astype(str).str.strip()
-
-df["card_number"] = (
-    raw_df[card_number_col].astype(str).str.strip()
-    if card_number_col else ""
-)
-
-df["set"] = (
-    raw_df[set_col].astype(str).str.strip()
-    if set_col else ""
-)
-
-df["notes"] = (
-    raw_df[notes_col].astype(str).str.strip()
-    if notes_col else ""
-)
-
-# =========================================================
-# BUILD CARD DESCRIPTION
-# =========================================================
-def build_card(row):
-    parts = []
-    if row["set"]:
-        parts.append(row["set"])
-    if row["card_number"]:
-        parts.append(f"#{row['card_number']}")
-    if row["notes"]:
-        parts.append(row["notes"])
-    return " – ".join(parts)
-
-df["card"] = df.apply(build_card, axis=1)
-
-# =========================================================
-# CLEAN CHECKLIST DATA
-# =========================================================
-df = df[df["player"].notna()]
-df = df[df["player"] != ""]
 df.reset_index(drop=True, inplace=True)
 
 # =========================================================
-# CHECKLIST SUCCESS
+# SUCCESS
 # =========================================================
-st.success("Checklist successfully ingested.")
+st.success("Checklist successfully parsed.")
 
 st.subheader("Parsed Checklist Preview")
 st.dataframe(
-    df[["player", "card"]].head(50),
+    df[["player", "card_number"]].head(50),
     use_container_width=True
 )
 
@@ -143,98 +122,11 @@ st.caption(
     f"Sport: {sport}"
 )
 
-st.divider()
-
 # =========================================================
-# PLAYER → TEAM MAPPING
-# =========================================================
-st.subheader("Player → Team Mapping")
-
-team_file = st.file_uploader(
-    "Upload Player-Team Mapping (CSV)",
-    type=["csv"],
-    help="CSV must contain columns: player, team",
-    key="team_map"
-)
-
-if team_file is None:
-    st.info("Upload a player-to-team mapping to continue.")
-    st.stop()
-
-# =========================================================
-# LOAD TEAM MAP
-# =========================================================
-try:
-    team_df = pd.read_csv(team_file)
-except Exception as e:
-    st.error("Failed to read team mapping file.")
-    st.exception(e)
-    st.stop()
-
-if team_df.empty:
-    st.error("Team mapping file is empty.")
-    st.stop()
-
-# =========================================================
-# NORMALIZE TEAM MAP
-# =========================================================
-team_df.columns = [
-    str(col).strip().lower() if col is not None else ""
-    for col in team_df.columns
-]
-
-if "player" not in team_df.columns or "team" not in team_df.columns:
-    st.error("Team mapping CSV must contain 'player' and 'team' columns.")
-    st.stop()
-
-team_df["player"] = team_df["player"].astype(str).str.strip()
-team_df["team"] = team_df["team"].astype(str).str.strip()
-
-# =========================================================
-# MERGE TEAM DATA
-# =========================================================
-df = df.merge(
-    team_df[["player", "team"]],
-    on="player",
-    how="left"
-)
-
-# =========================================================
-# REPORT MATCH RESULTS
-# =========================================================
-matched = df["team"].notna().sum()
-unmatched = df["team"].isna().sum()
-
-st.success("Player-team mapping applied.")
-
-col1, col2 = st.columns(2)
-col1.metric("Matched Players", matched)
-col2.metric("Unmatched Players", unmatched)
-
-# =========================================================
-# SHOW UNMATCHED (IF ANY)
-# =========================================================
-if unmatched > 0:
-    st.warning("Some players were not matched to a team.")
-    st.dataframe(
-        df[df["team"].isna()][["player"]].drop_duplicates().head(50),
-        use_container_width=True
-    )
-
-# =========================================================
-# FINAL DATA PREVIEW
-# =========================================================
-st.subheader("Final Dataset Preview")
-st.dataframe(
-    df[["player", "team", "card"]].head(50),
-    use_container_width=True
-)
-
-# =========================================================
-# END OF v2
+# END v3
 # =========================================================
 st.divider()
 st.info(
-    "Player-team mapping complete.\n\n"
-    "Team aggregation and pricing logic can now be layered safely."
+    "Structure-aware ingestion complete.\n\n"
+    "Player extraction is now reliable. Team mapping comes next."
 )
