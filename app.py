@@ -1,30 +1,32 @@
 import streamlit as st
 import pandas as pd
 
-# -----------------------------
+# =========================================================
 # APP CONFIG
-# -----------------------------
+# =========================================================
 st.set_page_config(
     page_title="Headline Break Pricing",
     layout="centered"
 )
 
-st.title("Product Context")
+st.title("Headline Break Pricing Tool")
 
-# -----------------------------
+# =========================================================
 # PRODUCT CONTEXT
-# -----------------------------
+# =========================================================
+st.subheader("Product Context")
+
 sport = st.selectbox(
     "Select sport / category",
-    options=["Baseball (MLB)", "Basketball (NBA)", "Football (NFL)"],
+    ["Baseball (MLB)", "Basketball (NBA)", "Football (NFL)"],
     index=0
 )
 
 st.divider()
 
-# -----------------------------
+# =========================================================
 # CHECKLIST UPLOAD
-# -----------------------------
+# =========================================================
 st.subheader("Checklist Upload (Strongly Recommended)")
 
 uploaded_file = st.file_uploader(
@@ -33,43 +35,37 @@ uploaded_file = st.file_uploader(
 )
 
 if uploaded_file is None:
-    st.info("Upload a Beckett checklist to continue.")
+    st.info("Please upload a Beckett checklist to continue.")
     st.stop()
 
-# -----------------------------
+# =========================================================
 # LOAD EXCEL SAFELY
-# -----------------------------
+# =========================================================
 try:
-    teams_df = pd.read_excel(uploaded_file)
+    raw_df = pd.read_excel(uploaded_file)
 except Exception as e:
-    st.error("❌ Failed to read Excel file.")
+    st.error("Failed to read the uploaded Excel file.")
     st.exception(e)
     st.stop()
 
-# -----------------------------
-# VALIDATE DATAFRAME
-# -----------------------------
-if teams_df.empty:
-    st.error("❌ Uploaded file is empty.")
+if raw_df.empty:
+    st.error("The uploaded file contains no data.")
     st.stop()
 
-# -----------------------------
-# NORMALIZE COLUMN HEADERS
-# -----------------------------
-teams_df.columns = (
-    teams_df.columns
-    .map(lambda x: str(x).strip().lower() if x is not None else "")
-)
+# =========================================================
+# NORMALIZE COLUMN HEADERS (CRITICAL FIX)
+# =========================================================
+raw_df.columns = [
+    str(col).strip().lower() if col is not None else ""
+    for col in raw_df.columns
+]
 
-# Debug visibility (leave this in for now)
-st.write("Detected columns:", list(teams_df.columns))
-
-# -----------------------------
-# REQUIRED COLUMN DETECTION
-# -----------------------------
-def find_column(keyword_list):
-    for col in teams_df.columns:
-        for keyword in keyword_list:
+# =========================================================
+# COLUMN DETECTION
+# =========================================================
+def find_column(keywords):
+    for col in raw_df.columns:
+        for keyword in keywords:
             if keyword in col:
                 return col
     return None
@@ -78,32 +74,32 @@ team_col = find_column(["team"])
 player_col = find_column(["player", "name"])
 card_col = find_column(["card", "description", "card name"])
 
-# -----------------------------
-# HARD FAIL IF REQUIRED DATA IS MISSING
-# -----------------------------
-missing = []
+# =========================================================
+# VALIDATION
+# =========================================================
+missing_columns = []
 
 if team_col is None:
-    missing.append("Team")
+    missing_columns.append("Team")
 if player_col is None:
-    missing.append("Player")
+    missing_columns.append("Player")
 if card_col is None:
-    missing.append("Card Description")
+    missing_columns.append("Card Description")
 
-if missing:
+if missing_columns:
     st.error(
-        "❌ Missing required columns:\n\n"
-        + "\n".join([f"- {m}" for m in missing])
+        "Missing required columns in checklist:\n\n"
+        + "\n".join(f"- {c}" for c in missing_columns)
         + "\n\nPlease verify the Beckett checklist format."
     )
     st.stop()
 
-# -----------------------------
-# CLEAN CORE DATA
-# -----------------------------
-core_df = teams_df[[team_col, player_col, card_col]].copy()
+# =========================================================
+# CLEAN & STANDARDIZE DATA
+# =========================================================
+df = raw_df[[team_col, player_col, card_col]].copy()
 
-core_df.rename(
+df.rename(
     columns={
         team_col: "team",
         player_col: "player",
@@ -112,24 +108,34 @@ core_df.rename(
     inplace=True
 )
 
-# Drop garbage rows
-core_df = core_df.dropna(how="all")
-core_df = core_df[core_df["team"].astype(str).str.len() > 0]
+# Drop rows that are fully empty
+df = df.dropna(how="all")
 
-# -----------------------------
+# Drop rows without a team value
+df = df[df["team"].astype(str).str.strip() != ""]
+
+# Reset index
+df.reset_index(drop=True, inplace=True)
+
+# =========================================================
 # SUCCESS STATE
-# -----------------------------
-st.success("✅ Checklist loaded successfully")
+# =========================================================
+st.success("Checklist uploaded and parsed successfully.")
 
-st.subheader("Preview")
-st.dataframe(core_df.head(25), use_container_width=True)
+st.subheader("Parsed Checklist Preview")
+st.dataframe(df.head(50), use_container_width=True)
 
-# -----------------------------
-# NEXT STEP PLACEHOLDER
-# -----------------------------
+st.caption(
+    f"Rows loaded: {len(df)} | "
+    f"Teams detected: {df['team'].nunique()} | "
+    f"Sport: {sport}"
+)
+
+# =========================================================
+# END OF CURRENT FUNCTIONALITY
+# =========================================================
 st.divider()
-st.subheader("Next Step")
 st.info(
-    "Checklist successfully parsed.\n\n"
-    "Break pricing logic will attach here next."
+    "Checklist ingestion complete.\n\n"
+    "This is the stable foundation. Pricing logic will be layered next."
 )
