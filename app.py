@@ -6,28 +6,33 @@ import re
 # APP CONFIG
 # =========================================================
 st.set_page_config(
-    page_title="Beckett PYT Pricing Engine",
+    page_title="Break Pricing Engine",
     layout="centered"
 )
 
-st.title("Beckett PYT Pricing Engine")
-st.caption("SlabStox-style PYT pricing using Beckett checklist data")
+st.title("Break Pricing Engine")
+st.caption("Checklist-driven pricing with real break economics")
 
 # =========================================================
-# INPUTS
+# BREAK INPUTS
 # =========================================================
 st.subheader("Break Inputs")
 
-col1, col2 = st.columns(2)
+col1, col2, col3 = st.columns(3)
 
-total_break_price = col1.number_input(
+break_format = col1.selectbox(
+    "Break Format",
+    ["PYT (Pick Your Team)", "PYP (Pick Your Player)"]
+)
+
+total_break_price = col2.number_input(
     "Target Total Break Price ($)",
     value=4500,
     step=50
 )
 
-floor_price = col2.number_input(
-    "Floor Team Price ($)",
+floor_price = col3.number_input(
+    "Floor Spot Price ($)",
     value=35,
     step=5
 )
@@ -35,7 +40,34 @@ floor_price = col2.number_input(
 st.divider()
 
 # =========================================================
-# CANONICAL MLB TEAMS (MODERN)
+# COST & FEES
+# =========================================================
+st.subheader("Cost & Fees")
+
+col4, col5, col6 = st.columns(3)
+
+purchase_cost = col4.number_input(
+    "Your Purchase Cost ($)",
+    value=3200,
+    step=50
+)
+
+market_cost = col5.number_input(
+    "Secondary Market Reference ($)",
+    value=3500,
+    step=50
+)
+
+fanatics_fee_pct = col6.number_input(
+    "Fanatics Fee (%)",
+    value=10.0,
+    step=0.5
+)
+
+st.divider()
+
+# =========================================================
+# TEAM DEFINITIONS
 # =========================================================
 MLB_TEAMS = sorted([
     "Arizona Diamondbacks","Atlanta Braves","Baltimore Orioles","Boston Red Sox",
@@ -48,9 +80,6 @@ MLB_TEAMS = sorted([
     "Tampa Bay Rays","Texas Rangers","Toronto Blue Jays","Washington Nationals"
 ])
 
-# =========================================================
-# LEGACY → MODERN TEAM MERGE MAP
-# =========================================================
 TEAM_MERGE_MAP = {
     "Montreal Expos": "Washington Nationals",
     "Washington Senators": "Washington Nationals",
@@ -69,13 +98,9 @@ file = st.file_uploader("Upload checklist (.xlsx)", type=["xlsx"])
 if not file:
     st.stop()
 
-# =========================================================
-# LOAD FULL CHECKLIST
-# =========================================================
 df = pd.read_excel(file, sheet_name="Full Checklist")
 df.columns = [str(c).strip().lower() for c in df.columns]
 
-# Expected Beckett layout
 df = df.iloc[:, 1:4]
 df.columns = ["player", "team", "notes"]
 
@@ -83,7 +108,6 @@ df["player"] = df["player"].astype(str).str.strip()
 df["team"] = df["team"].astype(str).str.strip()
 df["notes"] = df["notes"].astype(str).str.strip()
 
-# Remove junk rows
 df = df[
     (df["player"] != "") &
     (~df["player"].str.contains("nan", case=False)) &
@@ -91,14 +115,11 @@ df = df[
     (~df["team"].str.contains("nan", case=False))
 ]
 
-# =========================================================
-# MERGE LEGACY TEAMS INTO MODERN TEAMS
-# =========================================================
 df["team"] = df["team"].replace(TEAM_MERGE_MAP)
 df = df[df["team"].isin(MLB_TEAMS)]
 
 # =========================================================
-# TAG CHECKLIST SIGNALS
+# TAG SIGNALS
 # =========================================================
 df["rookie"] = df["notes"].str.contains(r"\bRC\b", flags=re.I, regex=True)
 df["league_leaders"] = df["notes"].str.contains("league leaders", flags=re.I, regex=True)
@@ -106,103 +127,72 @@ df["combo"] = df["notes"].str.contains("combo", flags=re.I, regex=True)
 df["team_card"] = df["notes"].str.contains("team card", flags=re.I, regex=True)
 
 # =========================================================
-# SCORE CHECKLIST STRENGTH
+# SCORING
 # =========================================================
 def score_row(r):
     score = 1
-    if r["rookie"]:
-        score += 3
-    if r["league_leaders"]:
-        score += 2
-    if r["combo"]:
-        score += 2
-    if r["team_card"]:
-        score += 1
+    if r["rookie"]: score += 3
+    if r["league_leaders"]: score += 2
+    if r["combo"]: score += 2
+    if r["team_card"]: score += 1
     return score
 
 df["score"] = df.apply(score_row, axis=1)
 
 # =========================================================
-# AGGREGATE BY TEAM (30 TEAMS)
+# GROUPING (PYT vs PYP)
 # =========================================================
-team_summary = (
-    df.groupby("team")
+group_col = "team" if "PYT" in break_format else "player"
+
+summary = (
+    df.groupby(group_col)
       .agg(
-          team_score=("score", "sum"),
-          card_count=("player", "count")
+          score=("score", "sum"),
+          count=("score", "count")
       )
-      .reindex(MLB_TEAMS, fill_value=0)
       .reset_index()
 )
 
-total_score = team_summary["team_score"].sum()
-total_cards = team_summary["card_count"].sum()
-
-team_summary["checklist_pct"] = team_summary["card_count"] / total_cards
-
 # =========================================================
-# TEAM STRENGTH LABELS (SLABSTOX-STYLE)
+# PRICING LOGIC
 # =========================================================
-def strength_label(score):
-    if score >= team_summary["team_score"].quantile(0.75):
-        return "Strong"
-    elif score >= team_summary["team_score"].quantile(0.35):
-        return "Average"
-    else:
-        return "Weak"
-
-team_summary["team_strength"] = team_summary["team_score"].apply(strength_label)
-
-# =========================================================
-# FLOOR-FIRST PRICING
-# =========================================================
-floor_total = len(MLB_TEAMS) * floor_price
+num_spots = len(summary)
+floor_total = num_spots * floor_price
 remaining_pool = total_break_price - floor_total
 
 if remaining_pool <= 0:
     st.error("Floor price too high for total break price.")
     st.stop()
 
-team_summary["weight_pct"] = team_summary["team_score"] / total_score
-team_summary["suggested_price"] = (
-    floor_price + (team_summary["weight_pct"] * remaining_pool)
-)
-
-# Round to hobby-friendly pricing
-team_summary["suggested_price"] = team_summary["suggested_price"].round(-1)
-
-# Final rounding reconciliation
-rounding_diff = total_break_price - team_summary["suggested_price"].sum()
-team_summary.loc[team_summary["suggested_price"].idxmax(), "suggested_price"] += rounding_diff
+summary["weight"] = summary["score"] / summary["score"].sum()
+summary["suggested_price"] = floor_price + (summary["weight"] * remaining_pool)
+summary["suggested_price"] = summary["suggested_price"].round(-1)
 
 # =========================================================
-# FORMAT OUTPUT
+# ECONOMICS
 # =========================================================
-team_summary["suggested_price"] = team_summary["suggested_price"].apply(lambda x: f"${int(x):,}")
-team_summary["checklist_pct"] = (team_summary["checklist_pct"] * 100).round(1).astype(str) + "%"
+gross_revenue = summary["suggested_price"].sum()
+fanatics_fees = gross_revenue * (fanatics_fee_pct / 100)
+net_revenue = gross_revenue - fanatics_fees
+profit = net_revenue - purchase_cost
+profit_pct = (profit / purchase_cost) * 100
 
 # =========================================================
-# DISPLAY
+# OUTPUT
 # =========================================================
-st.subheader("Suggested PYT Pricing (Merged Teams)")
+st.subheader("Suggested Pricing")
 
-display_cols = [
-    "team",
-    "team_strength",
-    "checklist_pct",
-    "suggested_price"
-]
+summary["suggested_price"] = summary["suggested_price"].apply(lambda x: f"${int(x):,}")
 
 st.dataframe(
-    team_summary[display_cols].sort_values(
-        by="suggested_price",
-        ascending=False,
-        key=lambda col: col.str.replace("$", "", regex=False).astype(int)
-    ),
+    summary.sort_values("suggested_price", ascending=False),
     use_container_width=True
 )
 
-st.success(
-    "Pricing generated using merged legacy teams, checklist strength, "
-    "and SlabStox-style presentation."
-)
+st.subheader("Break Economics")
+
+eco_col1, eco_col2, eco_col3 = st.columns(3)
+
+eco_col1.metric("Gross Revenue", f"${gross_revenue:,.0f}")
+eco_col2.metric("Net Revenue (After Fees)", f"${net_revenue:,.0f}")
+eco_col3.metric("Profit", f"${profit:,.0f}", f"{profit_pct:.1f}%")
