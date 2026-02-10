@@ -45,7 +45,18 @@ fanatics_fee_pct = c4.number_input(
 st.divider()
 
 # =========================================================
-# MARKET POPULARITY
+# MARKET POPULARITY TOGGLE (NEW)
+# =========================================================
+st.subheader("Market Popularity Adjustment")
+
+apply_market_popularity = st.toggle(
+    "Apply Market Popularity (recommended)",
+    value=True,
+    help="Applies long-term liquidity bias for large vs small market teams"
+)
+
+# =========================================================
+# MARKET POPULARITY DEFINITIONS
 # =========================================================
 LARGE_MARKET = {
     "New York Yankees","Los Angeles Dodgers","Boston Red Sox",
@@ -60,6 +71,8 @@ SMALL_MARKET = {
 }
 
 def market_mult(team):
+    if not apply_market_popularity:
+        return 1.0
     if team in LARGE_MARKET:
         return 1.08
     if team in SMALL_MARKET:
@@ -79,7 +92,7 @@ TEAM_MERGE = {
 }
 
 # =========================================================
-# UPLOAD CHECKLIST
+# UPLOAD BECKETT CHECKLIST
 # =========================================================
 st.subheader("Upload Beckett Checklist")
 
@@ -156,10 +169,12 @@ for _, row in summary.iterrows():
 
 summary["momentum_mult"] = summary[group_col].map(lambda x: mom_map[st.session_state.mom_state[x]])
 summary["velocity_mult"] = summary[group_col].map(lambda x: vel_map[st.session_state.vel_state[x]])
-summary["market_mult"] = summary[group_col].map(lambda x: market_mult(x) if break_format.startswith("PYT") else 1.0)
+summary["market_mult"] = summary[group_col].map(
+    lambda x: market_mult(x) if break_format.startswith("PYT") else 1.0
+)
 
 # =========================================================
-# ADJUSTED WEIGHT
+# ADJUSTED WEIGHT (LIVE REBALANCING)
 # =========================================================
 summary["adjusted_weight"] = (
     summary["base_score"]
@@ -180,6 +195,7 @@ target_gmv = secondary_market + premium
 # =========================================================
 summary["weight"] = summary["adjusted_weight"] / summary["adjusted_weight"].sum()
 summary["raw_price"] = summary["weight"] * target_gmv
+
 summary["raw_price"] = summary["raw_price"].clip(lower=40)
 summary["raw_price"] *= target_gmv / summary["raw_price"].sum()
 
@@ -205,77 +221,40 @@ st.dataframe(
 )
 
 st.subheader("Break Summary")
+
 a, b, c = st.columns(3)
 a.metric("Target GMV", f"${target_gmv:,.0f}")
 b.metric("Net Profit", f"${profit:,.0f}")
 c.metric("Fees", f"${fees:,.0f}")
 
 # =========================================================
-# EXPLANATION SECTION (NEW – SAFE ADDITION)
+# EXPLANATION
 # =========================================================
 st.divider()
 st.subheader("How These Prices Are Calculated")
 
 st.markdown("""
-This pricing engine is designed to mirror how experienced breakers price spots in real life.
-Below is a plain-English explanation of how the numbers are produced.
+**This engine mirrors real-world PYT pricing behavior.**
 
----
+1. **Market Anchor**  
+   We start from the secondary market price (e.g. Dave & Adam’s).
 
-### 1. Market Anchor (Starting Point)
-We begin with the **secondary market price** (e.g. Dave & Adam’s).  
-This represents what a buyer could pay for sealed wax instead of joining a break.
+2. **Break Premium**  
+   Based on overall checklist strength, a premium is added to reflect the value of breaking live.
 
-We then apply a **break premium** based on checklist quality:
-- Strong checklist → +$500  
-- Average checklist → +$300  
-- Weak checklist → +$150  
+3. **Checklist Weighting**  
+   Cards are scored using Beckett signals (base, rookies, combos, league leaders).
 
-This produces the **Target GMV** for the break.
+4. **Behavioral Adjustments**  
+   - Market popularity (optional toggle)  
+   - Momentum (news, hype)  
+   - Velocity (sell-through speed)
 
----
+   These **do not create value** — they redistribute it.
 
-### 2. Checklist Strength Scoring
-Each card in the Beckett checklist contributes signal:
-- Base card → +1  
-- Rookie card (RC) → +3  
-- League Leaders → +2  
-- Combo cards → +2  
+5. **GMV Normalization**  
+   All spots are rebalanced so the total equals the Target GMV.
 
-These signals are **summed by team or player** to determine relative strength.
-
----
-
-### 3. Market & Behavioral Adjustments
-We then apply **small, conservative multipliers**:
-- **Market popularity** (large vs small market teams)
-- **Momentum** (news, hype, call-ups)
-- **Velocity** (how fast a spot typically sells)
-
-These do not create value — they **redistribute** it.
-
----
-
-### 4. GMV Redistribution
-All adjusted weights are normalized so that:
-- The total of all spots equals the Target GMV
-- If one spot increases, others decrease slightly
-
-This is why changing one team automatically rebalances the room.
-
----
-
-### 5. Profit Check
-Finally, we calculate:
-- Platform fees
-- Net profit
-- Margin visibility
-
-This allows the business to decide whether to run, adjust, or wait — without guessing.
-
----
-
-**In short:**  
-This engine doesn’t invent prices.  
-It explains *why* prices look the way they do.
+6. **Profit Check**  
+   Platform fees and purchase cost are applied to show real profitability.
 """)
