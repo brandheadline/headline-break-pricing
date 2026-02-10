@@ -11,10 +11,10 @@ st.set_page_config(
 )
 
 st.title("Beckett PYT Pricing Engine")
-st.caption("Uses Beckett checklist team data directly (no roster file needed)")
+st.caption("Floor-first, weight-based PYT pricing (Fanatics-style)")
 
 # =========================================================
-# BREAK INPUTS
+# INPUTS
 # =========================================================
 st.subheader("Break Inputs")
 
@@ -47,34 +47,19 @@ file = st.file_uploader(
 if not file:
     st.stop()
 
-# Read Full Checklist sheet explicitly
-try:
-    df = pd.read_excel(file, sheet_name="Full Checklist")
-except Exception:
-    st.error("Could not find 'Full Checklist' sheet in the file.")
-    st.stop()
-
-# =========================================================
-# NORMALIZE COLUMNS
-# =========================================================
+# Load Full Checklist
+df = pd.read_excel(file, sheet_name="Full Checklist")
 df.columns = [str(c).strip().lower() for c in df.columns]
 
-# Expected structure from Beckett
-# player column usually unnamed or first text column
-player_col = df.columns[1]
-team_col = df.columns[2]
-notes_col = df.columns[3]
-
-df = df[[player_col, team_col, notes_col]]
+# Assume Beckett structure
+df = df.iloc[:, 1:4]
 df.columns = ["player", "team", "notes"]
 
 df["player"] = df["player"].astype(str).str.strip()
 df["team"] = df["team"].astype(str).str.strip()
 df["notes"] = df["notes"].astype(str).str.strip()
 
-# =========================================================
-# FILTER INVALID ROWS
-# =========================================================
+# Remove junk rows
 df = df[
     (df["player"] != "") &
     (~df["player"].str.contains("nan", case=False)) &
@@ -85,28 +70,23 @@ df = df[
 # TAG HOBBY SIGNALS
 # =========================================================
 df["rookie"] = df["notes"].str.contains(r"\bRC\b", flags=re.I, regex=True)
-df["team_card"] = df["notes"].str.contains("team card", flags=re.I, regex=True)
 df["league_leaders"] = df["notes"].str.contains("league leaders", flags=re.I, regex=True)
 df["combo"] = df["notes"].str.contains("combo", flags=re.I, regex=True)
+df["team_card"] = df["notes"].str.contains("team card", flags=re.I, regex=True)
 
 # =========================================================
-# CHASE SCORING (FANATICS-STYLE)
+# CHASE SCORING
 # =========================================================
 def score_row(r):
     score = 1  # base presence
-
     if r["rookie"]:
         score += 3
-
     if r["league_leaders"]:
         score += 2
-
     if r["combo"]:
         score += 2
-
     if r["team_card"]:
         score += 1
-
     return score
 
 df["score"] = df.apply(score_row, axis=1)
@@ -114,43 +94,42 @@ df["score"] = df.apply(score_row, axis=1)
 # =========================================================
 # AGGREGATE BY TEAM
 # =========================================================
-team_scores = (
-    df.groupby("team")["score"]
-    .sum()
-    .sort_values(ascending=False)
-)
+team_scores = df.groupby("team")["score"].sum().sort_values(ascending=False)
+teams = team_scores.reset_index()
+teams.columns = ["team", "team_score"]
 
-total_score = team_scores.sum()
-
-pricing = team_scores.reset_index()
-pricing.columns = ["team", "team_score"]
-
-pricing["weight_pct"] = pricing["team_score"] / total_score
-pricing["raw_price"] = pricing["weight_pct"] * total_break_price
+num_teams = len(teams)
 
 # =========================================================
-# ROUNDING & FLOORS
+# FLOOR-FIRST PRICING (CORRECT LOGIC)
 # =========================================================
-pricing["suggested_price"] = (
-    pricing["raw_price"]
-    .round(-1)
-    .clip(lower=floor_price)
-)
+floor_total = num_teams * floor_price
+remaining_pool = total_break_price - floor_total
 
-# Normalize back to total
-diff = total_break_price - pricing["suggested_price"].sum()
-if abs(diff) >= 10:
-    pricing.loc[0, "suggested_price"] += diff
+if remaining_pool <= 0:
+    st.error("Floor price too high for total break price.")
+    st.stop()
+
+total_score = teams["team_score"].sum()
+teams["weight_pct"] = teams["team_score"] / total_score
+teams["variable_price"] = teams["weight_pct"] * remaining_pool
+teams["suggested_price"] = floor_price + teams["variable_price"]
+
+# Hobby rounding
+teams["suggested_price"] = teams["suggested_price"].round(-1)
+
+# Final reconciliation (rounding only, safe)
+rounding_diff = total_break_price - teams["suggested_price"].sum()
+teams.loc[0, "suggested_price"] += rounding_diff
 
 # =========================================================
 # OUTPUT
 # =========================================================
-st.subheader("Suggested PYT Pricing (Beckett-Based)")
+st.subheader("Suggested PYT Pricing (Corrected)")
 
 st.dataframe(
-    pricing.sort_values("suggested_price", ascending=False),
+    teams.sort_values("suggested_price", ascending=False),
     use_container_width=True
 )
 
-st.success("Pricing generated using Beckett team assignments. Copy directly into Fanatics.")
-
+st.success("Pricing generated using floor-first allocation. No negatives possible.")
